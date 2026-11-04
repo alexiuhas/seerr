@@ -1,6 +1,7 @@
 import Button from '@app/components/Common/Button';
 import Tooltip from '@app/components/Common/Tooltip';
 import ManualSearchPanel from '@app/components/ManualSearch/ManualSearchPanel';
+import { useHoverTooltip } from '@app/components/ManualSearch/useHoverTooltip';
 import { Permission, useUser } from '@app/hooks/useUser';
 import defineMessages from '@app/utils/defineMessages';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
@@ -34,6 +35,7 @@ const ManualSearchButton = ({
   const intl = useIntl();
   const { hasPermission } = useUser();
   const [show, setShow] = useState(false);
+  const tooltipConfig = useHoverTooltip();
   const isAdmin = hasPermission(Permission.ADMIN);
 
   const { data: options, mutate } = useSWR<ManualSearchOptionsResponse>(
@@ -49,7 +51,10 @@ const ManualSearchButton = ({
 
   return (
     <>
-      <Tooltip content={intl.formatMessage(messages.manualsearch)}>
+      <Tooltip
+        content={intl.formatMessage(messages.manualsearch)}
+        tooltipConfig={tooltipConfig}
+      >
         <Button
           buttonType="ghost"
           onClick={() => {
