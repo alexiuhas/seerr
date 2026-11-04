@@ -2,9 +2,16 @@ import Alert from '@app/components/Common/Alert';
 import Button from '@app/components/Common/Button';
 import SlideOver from '@app/components/Common/SlideOver';
 import ReleaseCard from '@app/components/ManualSearch/ReleaseCard';
-import type { ReleaseSort } from '@app/components/ManualSearch/releases';
-import { sortAndFilterReleases } from '@app/components/ManualSearch/releases';
+import type {
+  CardState,
+  ReleaseSort,
+} from '@app/components/ManualSearch/releases';
+import {
+  releaseKey,
+  sortAndFilterReleases,
+} from '@app/components/ManualSearch/releases';
 import { encodeURIExtraParams } from '@app/hooks/useDiscover';
+import useToasts from '@app/hooks/useToasts';
 import defineMessages from '@app/utils/defineMessages';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import type {
@@ -12,6 +19,8 @@ import type {
   ManualSearchErrorResponse,
   ManualSearchQueries,
   ManualSearchResponse,
+  PushOutcome,
+  PushRequestBody,
   Release,
 } from '@server/interfaces/api/manualSearchInterfaces';
 import axios from 'axios';
@@ -40,7 +49,18 @@ const messages = defineMessages('components.ManualSearch', {
     'Prowlarr could not be reached. Check that it is running and that PROWLARR_URL and PROWLARR_API_KEY are correct.',
   disabled: 'Prowlarr is not configured.',
   unknownerror: 'Something went wrong while searching. Please try again.',
+  notinarr: 'Not in Radarr yet. Request it using the Quiet Server, then push.',
+  senttoradarr: 'Sent to Radarr.',
+  queuedinradarr: 'Queued in Radarr (pending).',
+  pushnotinarr: 'The movie is not in Radarr yet.',
+  pushnoserver:
+    'No Radarr server is configured for this movie. Set a default Radarr server in Settings.',
+  pushunreachable:
+    'Radarr could not be reached. Check that it is running, then push again.',
+  pushfailed: 'Something went wrong while pushing to Radarr.',
 });
+
+const IDLE: CardState = { status: 'idle' };
 
 const SORTS: ReleaseSort[] = ['seeders', 'size', 'age'];
 
@@ -53,6 +73,8 @@ interface ManualSearchPanelProps {
   tmdbId: number;
   title: string;
   queries: ManualSearchQueries;
+  /** Whether the movie is linked to a Radarr movie, so it can be Pushed. */
+  inArr: boolean;
 }
 
 const ManualSearchPanel = ({
@@ -62,8 +84,12 @@ const ManualSearchPanel = ({
   tmdbId,
   title,
   queries,
+  inArr,
 }: ManualSearchPanelProps) => {
   const intl = useIntl();
+  const { addToast } = useToasts();
+  // Kept across searches, so a Release already Pushed can't be Pushed twice.
+  const [cards, setCards] = useState<Record<string, CardState>>({});
   const [query, setQuery] = useState(queries.english);
   const [sort, setSort] = useState<ReleaseSort>('seeders');
   const [filter, setFilter] = useState('');
@@ -107,6 +133,56 @@ const ManualSearchPanel = ({
     }
   };
 
+  const pushErrorMessage: Partial<
+    Record<ManualSearchErrorCode, typeof messages.pushfailed>
+  > = {
+    NOT_IN_ARR: messages.pushnotinarr,
+    ARR_NOT_CONFIGURED: messages.pushnoserver,
+    ARR_UNREACHABLE: messages.pushunreachable,
+  };
+
+  const setCard = (key: string, state: CardState) =>
+    setCards((prev) => ({ ...prev, [key]: state }));
+
+  const push = async (release: Release) => {
+    const key = releaseKey(release);
+    setCard(key, { status: 'pushing' });
+    try {
+      // The server picks out the fields Radarr needs.
+      const body: PushRequestBody = { mediaType, tmdbId, release };
+      const { data: outcome } = await axios.post<PushOutcome>(
+        '/api/v1/manualsearch/push',
+        body
+      );
+      setCard(key, outcome);
+      if (outcome.status === 'approved') {
+        addToast(intl.formatMessage(messages.senttoradarr), {
+          appearance: 'success',
+          autoDismiss: true,
+        });
+      } else if (outcome.status === 'pending') {
+        addToast(intl.formatMessage(messages.queuedinradarr), {
+          appearance: 'info',
+          autoDismiss: true,
+        });
+      }
+    } catch (e) {
+      setCard(key, IDLE);
+      const code = axios.isAxiosError<ManualSearchErrorResponse>(e)
+        ? e.response?.data?.code
+        : undefined;
+      addToast(
+        intl.formatMessage(
+          (code && pushErrorMessage[code]) ?? messages.pushfailed
+        ),
+        {
+          appearance: 'error',
+          autoDismiss: true,
+        }
+      );
+    }
+  };
+
   // Search with the prefilled query the first time the panel opens.
   useEffect(() => {
     if (show && releases === null && !loading && !error) {
@@ -135,7 +211,9 @@ const ManualSearchPanel = ({
       : []),
   ];
 
-  const errorMessage = {
+  const errorMessage: Partial<
+    Record<SearchError, typeof messages.unknownerror>
+  > = {
     INDEXERS_UNAVAILABLE: messages.indexersunavailable,
     PROWLARR_UNREACHABLE: messages.prowlarrunreachable,
     DISABLED: messages.disabled,
@@ -156,6 +234,9 @@ const ManualSearchPanel = ({
       onClose={onClose}
     >
       <div className="flex flex-col gap-3">
+        {!inArr && (
+          <Alert type="info">{intl.formatMessage(messages.notinarr)}</Alert>
+        )}
         <form
           className="flex gap-2"
           onSubmit={(e) => {
@@ -255,7 +336,7 @@ const ManualSearchPanel = ({
             ))
           ) : error ? (
             <Alert type="error" title={intl.formatMessage(messages.errortitle)}>
-              {intl.formatMessage(errorMessage[error])}
+              {intl.formatMessage(errorMessage[error] ?? messages.unknownerror)}
             </Alert>
           ) : releases ? (
             <>
@@ -273,12 +354,18 @@ const ManualSearchPanel = ({
                   {intl.formatMessage(messages.nomatches)}
                 </p>
               ) : (
-                visibleReleases.map((release) => (
-                  <ReleaseCard
-                    key={`${release.indexerId}-${release.guid}`}
-                    release={release}
-                  />
-                ))
+                visibleReleases.map((release) => {
+                  const key = releaseKey(release);
+                  return (
+                    <ReleaseCard
+                      key={key}
+                      release={release}
+                      state={cards[key] ?? IDLE}
+                      canPush={inArr}
+                      onPush={() => push(release)}
+                    />
+                  );
+                })
               )}
             </>
           ) : null}

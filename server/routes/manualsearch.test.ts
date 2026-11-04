@@ -3,6 +3,10 @@ import { afterEach, before, beforeEach, describe, it, mock } from 'node:test';
 
 import TheMovieDb from '@server/api/themoviedb';
 import type { TmdbMovieDetails } from '@server/api/themoviedb/interfaces';
+import { MediaStatus, MediaType } from '@server/constants/media';
+import { getRepository } from '@server/datasource';
+import Media from '@server/entity/Media';
+import type { RadarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { checkUser } from '@server/middleware/auth';
 import { setupTestDb } from '@server/test/db';
@@ -34,15 +38,17 @@ Object.defineProperty(TheMovieDb.prototype, 'getMovie', {
   configurable: true,
 });
 
-// Prowlarr is faked at its HTTP client: every axios request lands here.
+// Prowlarr and Radarr are faked at their HTTP client: every axios request
+// lands here.
 interface OutboundRequest {
   /** Fully serialized URL, query string included. */
   uri: string;
   method?: string;
   headers: Record<string, unknown>;
+  body?: unknown;
 }
 let outbound: OutboundRequest[] = [];
-let prowlarrResponder: (req: OutboundRequest) => unknown = () => [];
+let httpResponder: (req: OutboundRequest) => unknown = () => [];
 
 function fakeHttp() {
   mock.method(
@@ -56,9 +62,13 @@ function fakeHttp() {
           ...(this.defaults.headers as unknown as Record<string, unknown>),
           ...(config.headers as Record<string, unknown>),
         },
+        body:
+          typeof config.data === 'string'
+            ? JSON.parse(config.data)
+            : config.data,
       };
       outbound.push(req);
-      return { status: 200, data: prowlarrResponder(req) };
+      return { status: 200, data: httpResponder(req) };
     }
   );
 }
@@ -120,7 +130,7 @@ beforeEach(() => {
   };
   tmdbCalls.length = 0;
   outbound = [];
-  prowlarrResponder = () => [];
+  httpResponder = () => [];
   fakeHttp();
 });
 
@@ -201,6 +211,7 @@ describe('GET /manualsearch/options', () => {
         english: 'Anatomy of a Fall 2023',
         original: "Anatomie d'une chute 2023",
       },
+      inArr: false,
     });
     assert.deepStrictEqual(tmdbCalls, [{ movieId: 915935, language: 'en' }]);
   });
@@ -295,7 +306,7 @@ describe('GET /manualsearch', () => {
   });
 
   it('returns torrent Releases only, in the Release shape', async () => {
-    prowlarrResponder = () => [
+    httpResponder = () => [
       prowlarrRelease(),
       prowlarrRelease({
         guid: 'nzb-1',
@@ -329,7 +340,7 @@ describe('GET /manualsearch', () => {
   });
 
   it('reports all indexers unavailable when Prowlarr answers 400', async () => {
-    prowlarrResponder = () => {
+    httpResponder = () => {
       throw httpError(400, {
         message: 'Search failed due to all selected indexers being unavailable',
       });
@@ -343,7 +354,7 @@ describe('GET /manualsearch', () => {
   });
 
   it('reports Prowlarr unreachable when the connection fails', async () => {
-    prowlarrResponder = () => {
+    httpResponder = () => {
       throw networkError();
     };
     const agent = await asAdmin();
@@ -355,7 +366,7 @@ describe('GET /manualsearch', () => {
   });
 
   it('reports Prowlarr unreachable when it answers with a server error', async () => {
-    prowlarrResponder = () => {
+    httpResponder = () => {
       throw httpError(500);
     };
     const agent = await asAdmin();
@@ -378,12 +389,335 @@ describe('GET /manualsearch', () => {
   });
 
   it('returns no results as an empty list, not an error', async () => {
-    prowlarrResponder = () => [];
+    httpResponder = () => [];
     const agent = await asAdmin();
     const res = await agent
       .get('/manualsearch')
       .query({ mediaType: 'movie', tmdbId: 915935, query: 'Nothing matches' });
     assert.strictEqual(res.status, 200);
     assert.deepStrictEqual(res.body, { results: [] });
+  });
+});
+
+function configureRadarr(servers: Partial<RadarrSettings>[]) {
+  getSettings().radarr = servers.map((server, i) => ({
+    id: i,
+    name: `Radarr ${i}`,
+    hostname: `radarr${i}`,
+    port: 7878,
+    apiKey: `radarr-key-${i}`,
+    baseUrl: '',
+    useSsl: false,
+    activeProfileId: 1,
+    activeProfileName: 'HD-1080p',
+    activeDirectory: '/movies',
+    is4k: false,
+    minimumAvailability: 'released',
+    tags: [],
+    isDefault: i === 0,
+    syncEnabled: true,
+    preventSearch: false,
+    externalUrl: '',
+    ...server,
+  })) as RadarrSettings[];
+}
+
+/** A movie Seerr has linked to a Radarr movie, as a sent request leaves it. */
+async function linkedMovie(overrides: Partial<Media> = {}) {
+  const repository = getRepository(Media);
+  return repository.save(
+    repository.create({
+      mediaType: MediaType.MOVIE,
+      tmdbId: 915935,
+      imdbId: 'tt17009710',
+      status: MediaStatus.PROCESSING,
+      serviceId: 0,
+      externalServiceId: 42,
+      ...overrides,
+    })
+  );
+}
+
+/** A Release as the panel sends it back to push. */
+function pushedRelease(overrides: Record<string, unknown> = {}) {
+  return {
+    guid: 'https://1337x.to/torrent/1',
+    indexerId: 3,
+    indexer: '1337x',
+    title: 'Anatomy.of.a.Fall.2023.1080p.BluRay.x264-PiGNUS',
+    size: 11_703_786_291,
+    seeders: 214,
+    leechers: 12,
+    publishDate: '2023-09-20T10:00:00Z',
+    downloadUrl: 'http://prowlarr:9696/3/download?link=abc',
+    infoUrl: 'https://1337x.to/torrent/1/info',
+    ...overrides,
+  };
+}
+
+/** Radarr's answer to a push: a list holding the evaluated release. */
+function radarrDecision(overrides: Record<string, unknown> = {}) {
+  return [
+    {
+      title: 'Anatomy.of.a.Fall.2023.1080p.BluRay.x264-PiGNUS',
+      approved: true,
+      temporarilyRejected: false,
+      rejected: false,
+      rejections: [],
+      ...overrides,
+    },
+  ];
+}
+
+const pushes = () =>
+  outbound.filter((req) => req.uri.endsWith('/api/v3/release/push'));
+
+describe('POST /manualsearch/push', () => {
+  beforeEach(() => {
+    configureRadarr([{}, { name: 'Radarr Quiet', isDefault: false }]);
+    httpResponder = () => radarrDecision();
+  });
+
+  afterEach(() => {
+    getSettings().radarr = [];
+  });
+
+  const push = async (release = pushedRelease()) => {
+    const agent = await asAdmin();
+    return agent
+      .post('/manualsearch/push')
+      .send({ mediaType: 'movie', tmdbId: 915935, release });
+  };
+
+  it('pushes to the Radarr server the movie was requested on', async () => {
+    await linkedMovie({ serviceId: 1 });
+    const res = await push();
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(pushes().length, 1);
+    assert.strictEqual(pushes()[0].method, 'post');
+    assert.ok(pushes()[0].uri.startsWith('http://radarr1:7878/api/v3/'));
+    assert.strictEqual(pushes()[0].headers['X-Api-Key'], 'radarr-key-1');
+  });
+
+  it('sends the Release with the movie IDs and a torrent protocol', async () => {
+    await linkedMovie();
+    await push();
+    assert.deepStrictEqual(pushes()[0].body, {
+      title: 'Anatomy.of.a.Fall.2023.1080p.BluRay.x264-PiGNUS',
+      protocol: 'torrent',
+      publishDate: '2023-09-20T10:00:00Z',
+      downloadUrl: 'http://prowlarr:9696/3/download?link=abc',
+      guid: 'https://1337x.to/torrent/1',
+      size: 11_703_786_291,
+      indexer: '1337x',
+      infoUrl: 'https://1337x.to/torrent/1/info',
+      seeders: 214,
+      leechers: 12,
+      tmdbId: 915935,
+      imdbId: 'tt17009710',
+    });
+  });
+
+  it('falls back to the default non-4K Radarr when the requested server is gone', async () => {
+    configureRadarr([
+      { name: 'Radarr 4K', is4k: true, isDefault: true },
+      { name: 'Radarr', isDefault: true },
+    ]);
+    await linkedMovie({ serviceId: 7 });
+    const res = await push();
+    assert.strictEqual(res.status, 200);
+    assert.ok(pushes()[0].uri.startsWith('http://radarr1:7878/'));
+  });
+
+  it('falls back to the default Radarr when the movie has no server recorded', async () => {
+    await linkedMovie({ serviceId: null });
+    await push();
+    assert.ok(pushes()[0].uri.startsWith('http://radarr0:7878/'));
+  });
+
+  it('reports no Radarr configured when no server matches and none is default', async () => {
+    configureRadarr([{ isDefault: false }]);
+    await linkedMovie({ serviceId: 5 });
+    const res = await push();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'ARR_NOT_CONFIGURED');
+    assert.strictEqual(pushes().length, 0);
+  });
+
+  it('reports Radarr unreachable when the connection fails', async () => {
+    await linkedMovie();
+    httpResponder = () => {
+      throw networkError();
+    };
+    const res = await push();
+    assert.strictEqual(res.status, 502);
+    assert.strictEqual(res.body.code, 'ARR_UNREACHABLE');
+  });
+
+  it('reports Radarr unreachable when it answers with a server error', async () => {
+    await linkedMovie();
+    httpResponder = () => {
+      throw httpError(500);
+    };
+    const res = await push();
+    assert.strictEqual(res.status, 502);
+    assert.strictEqual(res.body.code, 'ARR_UNREACHABLE');
+  });
+
+  it('answers 409 without pushing when the movie is not in Radarr', async () => {
+    await linkedMovie({ externalServiceId: null });
+    const res = await push();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
+    assert.strictEqual(pushes().length, 0);
+  });
+
+  it('answers 409 when Seerr has never seen the movie', async () => {
+    const res = await push();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
+  });
+
+  it("looks up the IMDb ID from TMDB when Seerr hasn't stored it", async () => {
+    tmdbMovie = { ...tmdbMovie, imdb_id: 'tt17009710' };
+    await linkedMovie({ imdbId: undefined });
+    await push();
+    assert.strictEqual(
+      (pushes()[0].body as { imdbId?: string }).imdbId,
+      'tt17009710'
+    );
+  });
+
+  it("sends a magnet-only Release as Prowlarr's proxied downloadUrl, without magnetUrl", async () => {
+    await linkedMovie();
+    await push(
+      pushedRelease({
+        downloadUrl: 'http://prowlarr:9696/3/download?link=magnet',
+        magnetUrl: 'magnet:?xt=urn:btih:abc',
+      })
+    );
+    const body = pushes()[0].body as Record<string, unknown>;
+    assert.strictEqual(
+      body.downloadUrl,
+      'http://prowlarr:9696/3/download?link=magnet'
+    );
+    assert.ok(!('magnetUrl' in body));
+  });
+
+  it('maps an approved Release to approved', async () => {
+    await linkedMovie();
+    const res = await push();
+    assert.deepStrictEqual(res.body, { status: 'approved' });
+  });
+
+  it('maps a temporarily rejected Release to pending, with the reasons', async () => {
+    await linkedMovie();
+    httpResponder = () =>
+      radarrDecision({
+        approved: false,
+        temporarilyRejected: true,
+        rejections: ['Delay profile: release held for 60 minutes'],
+      });
+    const res = await push();
+    assert.deepStrictEqual(res.body, {
+      status: 'pending',
+      rejections: ['Delay profile: release held for 60 minutes'],
+    });
+  });
+
+  it('maps a rejected Release to rejected, with the reasons', async () => {
+    await linkedMovie();
+    httpResponder = () =>
+      radarrDecision({
+        approved: false,
+        rejected: true,
+        rejections: [
+          'Custom format score -1000 is below the minimum of 0',
+          'Language French, English is not wanted',
+        ],
+      });
+    const res = await push();
+    assert.deepStrictEqual(res.body, {
+      status: 'rejected',
+      rejections: [
+        'Custom format score -1000 is below the minimum of 0',
+        'Language French, English is not wanted',
+      ],
+    });
+  });
+
+  it('maps a single-release answer from older Radarr versions too', async () => {
+    await linkedMovie();
+    httpResponder = () =>
+      radarrDecision({
+        approved: false,
+        rejected: true,
+        rejections: ['No'],
+      })[0];
+    const res = await push();
+    assert.deepStrictEqual(res.body, {
+      status: 'rejected',
+      rejections: ['No'],
+    });
+  });
+
+  it('maps an unparseable title (400) to rejected, with the reason', async () => {
+    await linkedMovie();
+    httpResponder = () => {
+      throw httpError(400, [
+        { propertyName: 'Title', errorMessage: 'Unable to parse' },
+      ]);
+    };
+    const res = await push();
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(res.body, {
+      status: 'rejected',
+      rejections: ['Unable to parse'],
+    });
+  });
+
+  it('sends every push to Radarr, never answering from a cache', async () => {
+    await linkedMovie();
+    await push();
+    await push();
+    assert.strictEqual(pushes().length, 2);
+  });
+
+  it('refuses non-admins', async () => {
+    await linkedMovie();
+    const agent = await asUser();
+    const res = await agent
+      .post('/manualsearch/push')
+      .send({ mediaType: 'movie', tmdbId: 915935, release: pushedRelease() });
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(pushes().length, 0);
+  });
+});
+
+describe('GET /manualsearch/options, Radarr link', () => {
+  it('reports inArr:true for a movie linked to Radarr', async () => {
+    await linkedMovie();
+    const agent = await asAdmin();
+    const res = await agent
+      .get('/manualsearch/options')
+      .query({ mediaType: 'movie', tmdbId: 915935 });
+    assert.strictEqual(res.body.inArr, true);
+  });
+
+  it('reports inArr:false for a movie without a Radarr link', async () => {
+    await linkedMovie({ externalServiceId: null });
+    const agent = await asAdmin();
+    const res = await agent
+      .get('/manualsearch/options')
+      .query({ mediaType: 'movie', tmdbId: 915935 });
+    assert.strictEqual(res.body.inArr, false);
+  });
+
+  it('reports inArr:false for a movie Seerr has never seen', async () => {
+    const agent = await asAdmin();
+    const res = await agent
+      .get('/manualsearch/options')
+      .query({ mediaType: 'movie', tmdbId: 915935 });
+    assert.strictEqual(res.body.inArr, false);
   });
 });

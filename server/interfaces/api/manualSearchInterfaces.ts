@@ -6,6 +6,8 @@ export interface ManualSearchQueries {
 export interface ManualSearchOptionsResponse {
   enabled: boolean;
   queries?: ManualSearchQueries;
+  /** Whether the movie is linked to a Radarr movie, so it can be Pushed. */
+  inArr?: boolean;
 }
 
 /** A single torrent offered by an indexer, as returned by a Manual Search. */
@@ -28,10 +30,39 @@ export interface ManualSearchResponse {
   results: Release[];
 }
 
+/** The fields of a Release that a Push sends on to Radarr. */
+export type PushableRelease = Pick<
+  Release,
+  | 'guid'
+  | 'title'
+  | 'publishDate'
+  | 'downloadUrl'
+  | 'size'
+  | 'indexer'
+  | 'infoUrl'
+  | 'seeders'
+  | 'leechers'
+>;
+
+export interface PushRequestBody {
+  mediaType: 'movie';
+  tmdbId: number;
+  release: PushableRelease;
+}
+
+/** Radarr's verdict on a Pushed Release. */
+export type PushOutcome =
+  | { status: 'approved' }
+  | { status: 'pending'; rejections: string[] }
+  | { status: 'rejected'; rejections: string[] };
+
 export type ManualSearchErrorCode =
   | 'DISABLED'
   | 'INDEXERS_UNAVAILABLE'
-  | 'PROWLARR_UNREACHABLE';
+  | 'PROWLARR_UNREACHABLE'
+  | 'NOT_IN_ARR'
+  | 'ARR_NOT_CONFIGURED'
+  | 'ARR_UNREACHABLE';
 
 export interface ManualSearchErrorResponse {
   code: ManualSearchErrorCode;
