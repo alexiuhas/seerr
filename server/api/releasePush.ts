@@ -21,7 +21,8 @@ export interface ReleasePushBody {
   tmdbId?: number;
   /** Sonarr only */
   tvdbId?: number;
-  imdbId?: string;
+  /** Radarr: the IMDb ID's digits as an int. Sonarr: the `tt…` string. */
+  imdbId?: number | string;
 }
 
 interface ReleaseResource {

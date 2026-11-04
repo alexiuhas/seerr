@@ -51,6 +51,12 @@ const orNothing = async <T>(lookup: () => Promise<T>): Promise<Partial<T>> => {
   }
 };
 
+/** Radarr's push reads imdbId as an int, so `tt0137523` goes as 137523. */
+const radarrImdbId = (imdbId?: string) => {
+  const digits = imdbId?.match(/^tt(\d+)$/)?.[1];
+  return digits ? Number(digits) : undefined;
+};
+
 const PROFILES: Record<ManualSearchMediaType, MediaProfile> = {
   movie: {
     noun: 'movie',
@@ -61,16 +67,17 @@ const PROFILES: Record<ManualSearchMediaType, MediaProfile> = {
     servers: () => getSettings().radarr,
     externalIds: async (media) => ({
       tmdbId: media.tmdbId,
-      imdbId:
+      imdbId: radarrImdbId(
         media.imdbId ??
-        (
-          await orNothing(async () => {
-            const movie = await new TheMovieDb().getMovie({
-              movieId: media.tmdbId,
-            });
-            return { imdbId: movie.imdb_id || undefined };
-          })
-        ).imdbId,
+          (
+            await orNothing(async () => {
+              const movie = await new TheMovieDb().getMovie({
+                movieId: media.tmdbId,
+              });
+              return { imdbId: movie.imdb_id || undefined };
+            })
+          ).imdbId
+      ),
     }),
   },
   tv: {
