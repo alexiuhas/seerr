@@ -13,6 +13,71 @@
 
 **Seerr** is a free and open source software application for managing requests for your media library. It integrates with the media server of your choice: [Jellyfin](https://jellyfin.org), [Plex](https://plex.tv), and [Emby](https://emby.media/). In addition, it integrates with your existing services, such as **[Sonarr](https://sonarr.tv/)**, **[Radarr](https://radarr.video/)**.
 
+## Manual Search Fork
+
+This fork adds **Manual Search**: an admin searches Prowlarr's indexers from a movie or series page and picks the exact Release to download. A daily workflow rebases the fork onto each new stable upstream tag and publishes it to `ghcr.io/alexiuhas/seerr`, as `:latest` and `:<upstream-tag>-ms.<sha>` (`linux/amd64` only). See [ADR-0001](docs/adr/0001-auto-rebased-fork-with-env-config.md).
+
+### Swapping the Image
+
+Replace the image in your compose file and keep the config volume. The fork has no DB migrations of its own, so your settings, users and requests carry over.
+
+```yaml
+services:
+  seerr:
+    image: ghcr.io/alexiuhas/seerr:latest # was ghcr.io/seerr-team/seerr
+    environment:
+      - PROWLARR_URL=http://prowlarr:9696
+      - PROWLARR_API_KEY=your-prowlarr-api-key
+      - PROWLARR_MOVIE_CLIENT=qBittorrent (Radarr)
+      - PROWLARR_TV_CLIENT=qBittorrent (Sonarr)
+    volumes:
+      - /path/to/appdata/config:/app/config # unchanged
+    networks:
+      - media
+```
+
+### Environment Variables
+
+Manual Search has no settings page. Prowlarr is configured only through these:
+
+| Variable                | Required | Description                                                                                         |
+| ----------------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `PROWLARR_URL`          | Yes      | Prowlarr's base URL as Seerr reaches it, e.g. `http://prowlarr:9696`.                               |
+| `PROWLARR_API_KEY`      | Yes      | Prowlarr's API key (Settings → General).                                                            |
+| `PROWLARR_MOVIE_CLIENT` | No       | Exact name of the Prowlarr download client used for movie grabs. Unset: no Prowlarr Grab for movies. |
+| `PROWLARR_TV_CLIENT`    | No       | Exact name of the Prowlarr download client used for series grabs. Unset: no Prowlarr Grab for series. |
+
+Without `PROWLARR_URL` and `PROWLARR_API_KEY`, Manual Search is disabled.
+
+### One Docker Network
+
+Seerr, Prowlarr, Radarr, Sonarr and the download client must share one Docker network. Seerr calls Prowlarr, and a chosen Release is Pushed to Radarr/Sonarr with a Prowlarr download link that Radarr/Sonarr then fetch. Every hostname (`prowlarr`, `radarr`, `sonarr`, `qbittorrent`) has to resolve from each of those containers, so use the same service names in Seerr's server settings and in `PROWLARR_URL`.
+
+### Quiet Server
+
+A request on a normal server makes Radarr/Sonarr search and grab something straight away, before you get to pick a Release yourself. For items you mean to pick by hand, add a **Quiet Server**: in Seerr's Settings → Services, add a second Radarr (and Sonarr) entry pointing at the same instance, with **Enable Automatic Search** off. Leave it not set as Default Server, and turn **Enable Scan** off so the instance isn't scanned twice. When requesting, choose the Quiet Server under the advanced request options, then open the item's page and run Manual Search.
+
+### Prowlarr Download Clients
+
+A chosen Release is first Pushed to Radarr/Sonarr, which grab and track it as usual. If they reject it, Manual Search offers a **Prowlarr Grab**, which sends it straight to the download client through Prowlarr. That needs one Prowlarr download client per media type (Prowlarr → Settings → Download Clients), both pointing at the same qBittorrent:
+
+- one for movies, named as in `PROWLARR_MOVIE_CLIENT`, with the **same category Radarr uses** (e.g. `radarr`)
+- one for series, named as in `PROWLARR_TV_CLIENT`, with the **same category Sonarr uses** (e.g. `tv-sonarr`)
+
+The categories must match Radarr's and Sonarr's own download-client categories, or they won't see the download. Even then, Radarr/Sonarr see a Prowlarr Grab only as an untracked download, so a badly named one can still end up needing a Manual Import ([ADR-0002](docs/adr/0002-push-first-prowlarr-grab-fallback.md)).
+
+### Maintaining the Fork
+
+Only `.github/workflows/fork-release.yml` should run. After forking:
+
+- disable upstream's other workflows in the Actions tab
+- make the `seerr` package public in GHCR (package settings → Change visibility), so it can be pulled without logging in
+- add a `FORK_PUSH_TOKEN` secret: a fine-grained token for this repo with **Contents** and **Workflows** read/write. The default `GITHUB_TOKEN` can't push a rebase that changes upstream's workflow files, which most upstream tags do.
+
+If a rebase conflicts, the scheduled run fails without pushing anything and the last good image keeps running. Rebase `manual-search` onto the new tag by hand and force-push it; the push builds and publishes.
+
+GitHub pauses scheduled workflows after 60 days without repository activity. If the daily run stops, re-enable it in the Actions tab.
+
 ## Current Features
 
 - Full Jellyfin/Emby/Plex integration including authentication with user import & management.
