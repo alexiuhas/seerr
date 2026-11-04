@@ -16,12 +16,17 @@ import {
   releaseKey,
   sortAndFilterReleases,
 } from '@app/components/ManualSearch/releases';
+import useDebouncedState from '@app/hooks/useDebouncedState';
 import { encodeURIExtraParams } from '@app/hooks/useDiscover';
 import useToasts from '@app/hooks/useToasts';
 import defineMessages from '@app/utils/defineMessages';
-import { ArrowDownIcon, ArrowUpIcon } from '@heroicons/react/20/solid';
 import {
+  ArrowDownIcon,
+  ArrowUpIcon,
   FunnelIcon,
+  MagnifyingGlassIcon as SearchFieldIcon,
+} from '@heroicons/react/20/solid';
+import {
   InformationCircleIcon,
   MagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
@@ -40,6 +45,7 @@ import type {
   SearchScope,
 } from '@server/interfaces/api/manualSearchInterfaces';
 import axios from 'axios';
+import type { InputHTMLAttributes } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useIntl } from 'react-intl';
 
@@ -47,7 +53,6 @@ const messages = defineMessages('components.ManualSearch', {
   manualsearch: 'Manual Search',
   searchquery: 'Search Query',
   searchprowlarr: 'Search Prowlarr',
-  search: 'Search',
   searchfor: 'Search For',
   englishtitle: 'English',
   originaltitle: 'Original',
@@ -64,7 +69,6 @@ const messages = defineMessages('components.ManualSearch', {
   sortageasc: 'Newest first',
   sortagedesc: 'Oldest first',
   filterreleases: 'Filter releases…',
-  applyfilter: 'Apply',
   releasecount: '{count, plural, one {# release} other {# releases}}',
   noresults: 'No releases found. Try another query.',
   nomatches: 'No releases match the filter.',
@@ -100,10 +104,29 @@ const messages = defineMessages('components.ManualSearch', {
 
 const IDLE: CardState = { status: 'idle' };
 
-// Matches the colours of Seerr's main search input (Layout/SearchInput).
-// `!` beats the global input[type='text'] rule, as elsewhere in upstream.
+// Seerr's main search input (Layout/SearchInput), a size smaller.
 const INPUT_CLASS =
-  'min-w-0 flex-1 !border-gray-600 !bg-gray-900/80 placeholder:text-gray-300 hover:!border-gray-500 focus:!border-gray-500 focus:!bg-gray-900 focus:ring-0 focus:placeholder:text-gray-400';
+  'block w-full rounded-full border border-gray-600 bg-gray-900/80 py-1.5 pl-9 pr-3 text-sm leading-5 text-white placeholder-gray-300 hover:border-gray-500 focus:border-gray-500 focus:bg-gray-900 focus:placeholder-gray-400 focus:outline-none focus:ring-0';
+
+/** A pill-shaped input with its icon inside on the left. */
+const IconInput = ({
+  icon: Icon,
+  ...props
+}: InputHTMLAttributes<HTMLInputElement> & {
+  icon: typeof SearchFieldIcon;
+}) => (
+  <div className="relative text-white focus-within:text-gray-200">
+    <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+      <Icon className="h-4 w-4" />
+    </div>
+    <input
+      type="search"
+      autoComplete="off"
+      className={INPUT_CLASS}
+      {...props}
+    />
+  </div>
+);
 
 const SORTS: ReleaseSortKey[] = ['seeders', 'size', 'age'];
 
@@ -156,10 +179,9 @@ const ManualSearchPanel = ({
   const { addToast } = useToasts();
   // Kept across searches, so a Release already Pushed can't be Pushed twice.
   const [cards, setCards] = useState<Record<string, CardState>>({});
-  const [query, setQuery] = useState(queries.english);
+  // Searches as you type, after a pause, like Seerr's main search.
+  const [query, debouncedQuery, setQuery] = useDebouncedState(queries.english);
   const [sort, setSort] = useState<ReleaseSort>(DEFAULT_SORT);
-  // What's typed in the filter box; it narrows the list once applied.
-  const [filterDraft, setFilterDraft] = useState('');
   const [filter, setFilter] = useState('');
   const [releases, setReleases] = useState<Release[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -168,6 +190,8 @@ const ManualSearchPanel = ({
   const [searchExpired, setSearchExpired] = useState(false);
   // ignores responses from searches that a newer one has superseded
   const latestSearch = useRef(0);
+  // the last query sent, so the debounced query doesn't send it again
+  const lastSearched = useRef('');
 
   const search = async (searchQuery: string) => {
     const trimmed = searchQuery.trim();
@@ -175,6 +199,7 @@ const ManualSearchPanel = ({
       return;
     }
     const searchId = ++latestSearch.current;
+    lastSearched.current = trimmed;
     setLoading(true);
     setError(null);
     setSearchExpired(false);
@@ -302,13 +327,15 @@ const ManualSearchPanel = ({
     }
   };
 
-  // Search with the prefilled query the first time the panel opens.
+  // Search once typing pauses, starting with the prefilled query when the
+  // panel first opens. Chips and Enter search straight away.
   useEffect(() => {
-    if (show && releases === null && !loading && !error) {
-      search(query);
+    const trimmed = debouncedQuery.trim();
+    if (show && trimmed && trimmed !== lastSearched.current) {
+      search(trimmed);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [show]);
+  }, [show, debouncedQuery]);
 
   const visibleReleases = useMemo(
     () => (releases ? sortAndFilterReleases(releases, sort, filter) : []),
@@ -377,7 +404,7 @@ const ManualSearchPanel = ({
           </Alert>
         )}
         <form
-          className="flex gap-2"
+          role="search"
           onSubmit={(e) => {
             e.preventDefault();
             search(query);
@@ -386,25 +413,14 @@ const ManualSearchPanel = ({
           <label htmlFor="manual-search-query" className="sr-only">
             {intl.formatMessage(messages.searchquery)}
           </label>
-          <input
+          <IconInput
+            icon={SearchFieldIcon}
             id="manual-search-query"
-            type="text"
             enterKeyHint="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={intl.formatMessage(messages.searchprowlarr)}
-            className={INPUT_CLASS}
           />
-          <Button
-            type="submit"
-            buttonType="primary"
-            disabled={loading || !query.trim()}
-          >
-            <MagnifyingGlassIcon />
-            <span className="hidden sm:inline">
-              {intl.formatMessage(messages.search)}
-            </span>
-          </Button>
         </form>
 
         {presets.length > 0 && (
@@ -454,36 +470,6 @@ const ManualSearchPanel = ({
             <>
               {releases.length > 0 && (
                 <>
-                  <form
-                    className="flex gap-2"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      setFilter(filterDraft);
-                    }}
-                  >
-                    <label htmlFor="manual-search-filter" className="sr-only">
-                      {intl.formatMessage(messages.filterreleases)}
-                    </label>
-                    <input
-                      id="manual-search-filter"
-                      type="text"
-                      enterKeyHint="done"
-                      value={filterDraft}
-                      onChange={(e) => setFilterDraft(e.target.value)}
-                      placeholder={intl.formatMessage(messages.filterreleases)}
-                      className={INPUT_CLASS}
-                    />
-                    <Button
-                      type="submit"
-                      buttonType="primary"
-                      disabled={filterDraft === filter}
-                    >
-                      <FunnelIcon />
-                      <span className="hidden sm:inline">
-                        {intl.formatMessage(messages.applyfilter)}
-                      </span>
-                    </Button>
-                  </form>
                   <div className="flex items-center gap-3">
                     <span className="shrink-0 text-xs tabular-nums text-gray-400">
                       {intl.formatMessage(messages.releasecount, {
@@ -530,6 +516,19 @@ const ManualSearchPanel = ({
                         );
                       })}
                     </div>
+                  </div>
+                  <div>
+                    <label htmlFor="manual-search-filter" className="sr-only">
+                      {intl.formatMessage(messages.filterreleases)}
+                    </label>
+                    <IconInput
+                      icon={FunnelIcon}
+                      id="manual-search-filter"
+                      enterKeyHint="done"
+                      value={filter}
+                      onChange={(e) => setFilter(e.target.value)}
+                      placeholder={intl.formatMessage(messages.filterreleases)}
+                    />
                   </div>
                 </>
               )}
