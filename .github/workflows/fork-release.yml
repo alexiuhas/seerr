@@ -1,0 +1,141 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+# The fork's only workflow (ADR-0001): keeps manual-search rebased on the
+# newest stable upstream tag and publishes it to GHCR. Upstream's workflows
+# stay in the tree but are disabled in the fork's Actions settings.
+name: Fork Release
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+  push:
+    branches:
+      - manual-search # also in env.BRANCH and the build job's `if`
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+env:
+  BRANCH: manual-search
+  IMAGE: ghcr.io/alexiuhas/seerr
+  UPSTREAM: https://github.com/seerr-team/seerr.git
+
+jobs:
+  rebase:
+    name: Rebase onto upstream
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      build_inline: ${{ steps.push.outputs.build_inline }}
+      sha: ${{ steps.push.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          # Credentials are kept for the push. GITHUB_TOKEN can't push changes
+          # to .github/workflows, which most upstream tags include, so a PAT
+          # with Workflows write is used when one is set.
+          token: ${{ secrets.FORK_PUSH_TOKEN || github.token }}
+
+      - name: Fetch upstream tags
+        run: git fetch --force --no-tags "$UPSTREAM" '+refs/tags/v*:refs/tags/v*'
+
+      - name: Rebase
+        id: rebase
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          .github/scripts/fork-rebase.sh rebase
+
+      - name: Push
+        id: push
+        if: steps.rebase.outputs.rebased == 'true'
+        env:
+          BEFORE: ${{ github.sha }}
+          # A PAT's push starts a push run that builds; GITHUB_TOKEN's doesn't.
+          HAS_PAT: ${{ secrets.FORK_PUSH_TOKEN != '' }}
+        run: |
+          git push --force-with-lease="$BRANCH:$BEFORE" origin "HEAD:$BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [[ "$HAS_PAT" == 'true' ]]; then
+            echo 'build_inline=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'build_inline=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build & publish
+    needs: rebase
+    # Runs on push/dispatch (rebase skipped), or after a scheduled rebase that
+    # pushed. A failed rebase (conflict) or no new tag means no build.
+    if: >-
+      !cancelled()
+      && github.ref == 'refs/heads/manual-search'
+      && (needs.rebase.result == 'skipped'
+          || (needs.rebase.result == 'success' && needs.rebase.outputs.build_inline == 'true'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.rebase.outputs.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch upstream tags
+        run: git fetch --force --no-tags "$UPSTREAM" '+refs/tags/v*:refs/tags/v*'
+
+      # :<upstream-tag>-ms.<shortsha>, "ms" for Manual Search.
+      - name: Image tags
+        id: meta
+        run: |
+          base=$(.github/scripts/fork-rebase.sh base)
+          sha=$(git rev-parse HEAD)
+          {
+            echo "sha=$sha"
+            echo "version=$base-ms.$(git rev-parse --short=7 HEAD)"
+            echo "timestamp=$(git log -1 --pretty=%ct)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            COMMIT_TAG=${{ steps.meta.outputs.sha }}
+            SOURCE_DATE_EPOCH=${{ steps.meta.outputs.timestamp }}
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.meta.outputs.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          cache-from: type=gha,scope=fork-amd64
+          cache-to: type=gha,mode=max,scope=fork-amd64
+          provenance: false
