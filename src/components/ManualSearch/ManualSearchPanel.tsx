@@ -422,7 +422,7 @@ const ManualSearchPanel = ({
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-stretch gap-2">
           <div
             role="group"
             aria-label={intl.formatMessage(messages.sortby)}
@@ -434,7 +434,7 @@ const ManualSearchPanel = ({
                 type="button"
                 aria-pressed={sort === key}
                 onClick={() => setSort(key)}
-                className={`px-2.5 py-1 text-xs ${
+                className={`flex items-center px-2.5 py-1 text-xs ${
                   sort === key
                     ? 'bg-gray-600 text-white'
                     : 'text-gray-300 hover:bg-gray-700'
