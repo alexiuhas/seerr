@@ -4,6 +4,7 @@ import SlideOver from '@app/components/Common/SlideOver';
 import ReleaseCard from '@app/components/ManualSearch/ReleaseCard';
 import type { ReleaseSort } from '@app/components/ManualSearch/releases';
 import { sortAndFilterReleases } from '@app/components/ManualSearch/releases';
+import { encodeURIExtraParams } from '@app/hooks/useDiscover';
 import defineMessages from '@app/utils/defineMessages';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import type {
@@ -81,9 +82,12 @@ const ManualSearchPanel = ({
     setLoading(true);
     setError(null);
     try {
+      // Encoded by hand: axios turns spaces into '+', which the OpenAPI
+      // validator rejects as a reserved character.
       const response = await axios.get<ManualSearchResponse>(
-        '/api/v1/manualsearch',
-        { params: { mediaType, tmdbId, query: trimmed } }
+        `/api/v1/manualsearch?mediaType=${mediaType}&tmdbId=${tmdbId}&query=${encodeURIExtraParams(
+          trimmed
+        )}`
       );
       if (searchId === latestSearch.current) {
         setReleases(response.data.results);
@@ -164,7 +168,8 @@ const ManualSearchPanel = ({
           </label>
           <input
             id="manual-search-query"
-            type="search"
+            type="text"
+            enterKeyHint="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={intl.formatMessage(messages.searchprowlarr)}
