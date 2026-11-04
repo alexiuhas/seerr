@@ -13,6 +13,8 @@ import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
 import type {
   ArrName,
+  GrabbableRelease,
+  GrabOutcome,
   ManualSearchMediaType,
   ManualSearchOptionsResponse,
   ManualSearchQueries,
@@ -29,6 +31,8 @@ interface MediaProfile {
   noun: 'movie' | 'series';
   arr: ArrName;
   category: number;
+  /** The env var naming the Prowlarr download client for a Prowlarr Grab. */
+  grabClientEnv: 'PROWLARR_MOVIE_CLIENT' | 'PROWLARR_TV_CLIENT';
   mediaType: MediaType;
   servers: () => DVRSettings[];
   /** The IDs that help Radarr/Sonarr match a Release whose title parses. */
@@ -52,6 +56,7 @@ const PROFILES: Record<ManualSearchMediaType, MediaProfile> = {
     noun: 'movie',
     arr: 'Radarr',
     category: PROWLARR_MOVIE_CATEGORY,
+    grabClientEnv: 'PROWLARR_MOVIE_CLIENT',
     mediaType: MediaType.MOVIE,
     servers: () => getSettings().radarr,
     externalIds: async (media) => ({
@@ -72,6 +77,7 @@ const PROFILES: Record<ManualSearchMediaType, MediaProfile> = {
     noun: 'series',
     arr: 'Sonarr',
     category: PROWLARR_TV_CATEGORY,
+    grabClientEnv: 'PROWLARR_TV_CLIENT',
     mediaType: MediaType.TV,
     servers: () => getSettings().sonarr,
     externalIds: async (media) => {
@@ -215,30 +221,55 @@ async function isInArr(profile: MediaProfile, tmdbId: number) {
   return media?.externalServiceId != null;
 }
 
-/** What the panel opens with: prefilled queries, Search Scopes, Push state. */
+/**
+ * Whether a rejected Push can fall back to a Prowlarr Grab. Never for items
+ * outside Radarr/Sonarr; an unreachable Prowlarr just hides the button.
+ */
+async function isGrabAvailable(profile: MediaProfile, inArr: boolean) {
+  const config = getProwlarrConfig();
+  if (!inArr || !config) {
+    return false;
+  }
+  try {
+    return (
+      (await resolveGrabClientId(new ProwlarrAPI(config), profile)) != null
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What the panel opens with: prefilled queries, Search Scopes, Push and
+ * Prowlarr Grab state.
+ */
 export async function getManualSearchOptions(
   mediaType: ManualSearchMediaType,
   tmdbId: number
 ): Promise<ManualSearchOptionsResponse> {
   const profile = PROFILES[mediaType];
+  const arrState = isInArr(profile, tmdbId).then(async (inArr) => ({
+    inArr,
+    prowlarrGrabAvailable: await isGrabAvailable(profile, inArr),
+  }));
   if (mediaType === 'tv') {
-    const [scopes, inArr] = await Promise.all([
+    const [scopes, state] = await Promise.all([
       getSeriesScopes(tmdbId),
-      isInArr(profile, tmdbId),
+      arrState,
     ]);
     // the first scope is always the whole series
     return {
       enabled: true,
       queries: { english: scopes[0].query },
       scopes,
-      inArr,
+      ...state,
     };
   }
-  const [queries, inArr] = await Promise.all([
+  const [queries, state] = await Promise.all([
     getMovieQueries(tmdbId),
-    isInArr(profile, tmdbId),
+    arrState,
   ]);
-  return { enabled: true, queries, inArr };
+  return { enabled: true, queries, ...state };
 }
 
 /**
@@ -288,4 +319,58 @@ export async function pushRelease(
     leechers: release.leechers,
     ...(await profile.externalIds(media)),
   });
+}
+
+/**
+ * No Prowlarr Grab for this media type: its client env var is unset, or
+ * Prowlarr has no download client by that name.
+ */
+export class GrabUnavailableError extends Error {
+  constructor({ noun }: MediaProfile) {
+    super(`No Prowlarr download client is set up for a ${noun} grab`);
+    this.name = 'GrabUnavailableError';
+  }
+}
+
+/**
+ * The Prowlarr download client for the media type, matched by exact name
+ * against `PROWLARR_MOVIE_CLIENT` / `PROWLARR_TV_CLIENT`.
+ */
+async function resolveGrabClientId(
+  api: ProwlarrAPI,
+  profile: MediaProfile
+): Promise<number | undefined> {
+  const name = process.env[profile.grabClientEnv];
+  return name ? api.findDownloadClientId(name) : undefined;
+}
+
+/**
+ * Sends a Release straight to qBittorrent through Prowlarr (ADR-0002), for
+ * items in Radarr/Sonarr only: anything else would always end in a Manual
+ * Import.
+ */
+export async function grabRelease(
+  mediaType: ManualSearchMediaType,
+  tmdbId: number,
+  release: GrabbableRelease
+): Promise<GrabOutcome> {
+  const config = getProwlarrConfig();
+  if (!config) {
+    throw new ManualSearchDisabledError();
+  }
+  const profile = PROFILES[mediaType];
+  if (!(await isInArr(profile, tmdbId))) {
+    throw new NotInArrError(profile);
+  }
+  const api = new ProwlarrAPI(config);
+  const downloadClientId = await resolveGrabClientId(api, profile);
+  if (downloadClientId == null) {
+    throw new GrabUnavailableError(profile);
+  }
+  await api.grab({
+    guid: release.guid,
+    indexerId: release.indexerId,
+    downloadClientId,
+  });
+  return { status: 'grabbed' };
 }

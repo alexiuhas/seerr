@@ -246,6 +246,7 @@ describe('GET /manualsearch/options', () => {
         original: "Anatomie d'une chute 2023",
       },
       inArr: false,
+      prowlarrGrabAvailable: false,
     });
     assert.deepStrictEqual(tmdbCalls, [{ movieId: 915935, language: 'en' }]);
   });
@@ -772,6 +773,7 @@ describe('GET /manualsearch/options, TV', () => {
         { season: 2, query: 'Severance S02' },
       ],
       inArr: false,
+      prowlarrGrabAvailable: false,
     });
     assert.deepStrictEqual(tmdbTvCalls, [{ tvId: 95396, language: 'en' }]);
     assert.strictEqual(tmdbCalls.length, 0);
@@ -1099,5 +1101,307 @@ describe('GET /manualsearch/options, Sonarr link', () => {
       .get('/manualsearch/options')
       .query({ mediaType: 'tv', tmdbId: 95396 });
     assert.strictEqual(res.body.inArr, false);
+  });
+});
+
+/** Prowlarr's download clients, as `GET /api/v1/downloadclient` lists them. */
+const PROWLARR_CLIENTS = [
+  { id: 1, name: 'qBittorrent Radarr', implementation: 'QBittorrent' },
+  { id: 2, name: 'qBittorrent Sonarr', implementation: 'QBittorrent' },
+];
+
+const clientLookups = () =>
+  outbound.filter((req) => req.uri.endsWith('/api/v1/downloadclient'));
+const grabs = () =>
+  outbound.filter(
+    (req) => req.method === 'post' && req.uri.endsWith('/api/v1/search')
+  );
+
+/** Prowlarr answers the client list, and a grab with the grabbed release. */
+function prowlarrResponder(req: OutboundRequest) {
+  if (req.uri.endsWith('/api/v1/downloadclient')) {
+    return PROWLARR_CLIENTS;
+  }
+  return { guid: 'https://1337x.to/torrent/1', indexerId: 3 };
+}
+
+describe('POST /manualsearch/grab', () => {
+  beforeEach(() => {
+    process.env.PROWLARR_MOVIE_CLIENT = 'qBittorrent Radarr';
+    process.env.PROWLARR_TV_CLIENT = 'qBittorrent Sonarr';
+    httpResponder = prowlarrResponder;
+  });
+
+  afterEach(() => {
+    delete process.env.PROWLARR_MOVIE_CLIENT;
+    delete process.env.PROWLARR_TV_CLIENT;
+  });
+
+  const grab = async (release = pushedRelease()) => {
+    const agent = await asAdmin();
+    return agent
+      .post('/manualsearch/grab')
+      .send({ mediaType: 'movie', tmdbId: 915935, release });
+  };
+
+  it('grabs through the Prowlarr client named for movies', async () => {
+    await linkedMovie();
+    const res = await grab();
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(res.body, { status: 'grabbed' });
+    assert.strictEqual(grabs().length, 1);
+    assert.strictEqual(grabs()[0].uri, `${PROWLARR_URL}/api/v1/search`);
+    assert.strictEqual(grabs()[0].headers['X-Api-Key'], PROWLARR_API_KEY);
+    assert.deepStrictEqual(grabs()[0].body, {
+      guid: 'https://1337x.to/torrent/1',
+      indexerId: 3,
+      downloadClientId: 1,
+    });
+  });
+
+  it('answers 409 without grabbing when the movie client env var is unset', async () => {
+    delete process.env.PROWLARR_MOVIE_CLIENT;
+    await linkedMovie();
+    const res = await grab();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'GRAB_UNAVAILABLE');
+    assert.strictEqual(grabs().length, 0);
+  });
+
+  it('answers 409 without grabbing when Prowlarr has no client by that name', async () => {
+    process.env.PROWLARR_MOVIE_CLIENT = 'qbittorrent radarr';
+    await linkedMovie();
+    const res = await grab();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'GRAB_UNAVAILABLE');
+    assert.strictEqual(grabs().length, 0);
+  });
+
+  it('answers 409 without asking Prowlarr when the movie is not in Radarr', async () => {
+    await linkedMovie({ externalServiceId: null });
+    const res = await grab();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
+    assert.strictEqual(outbound.length, 0);
+  });
+
+  it('answers 409 when Seerr has never seen the movie', async () => {
+    const res = await grab();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
+    assert.strictEqual(grabs().length, 0);
+  });
+
+  it("answers 410 when the Release dropped out of Prowlarr's search cache", async () => {
+    await linkedMovie();
+    httpResponder = (req) => {
+      if (req.method === 'post') {
+        throw httpError(404, {
+          message:
+            "Couldn't find requested release in cache, cache timeout probably expired.",
+        });
+      }
+      return prowlarrResponder(req);
+    };
+    const res = await grab();
+    assert.strictEqual(res.status, 410);
+    assert.strictEqual(res.body.code, 'SEARCH_EXPIRED');
+  });
+
+  it('reports the grab failed when Prowlarr refuses it', async () => {
+    await linkedMovie();
+    httpResponder = (req) => {
+      if (req.method === 'post') {
+        throw httpError(409, {
+          message: 'Getting release from indexer failed',
+        });
+      }
+      return prowlarrResponder(req);
+    };
+    const res = await grab();
+    assert.strictEqual(res.status, 502);
+    assert.strictEqual(res.body.code, 'GRAB_FAILED');
+    assert.match(res.body.message, /Getting release from indexer failed/);
+  });
+
+  it('reports Prowlarr unreachable when the connection fails', async () => {
+    await linkedMovie();
+    httpResponder = () => {
+      throw networkError();
+    };
+    const res = await grab();
+    assert.strictEqual(res.status, 502);
+    assert.strictEqual(res.body.code, 'PROWLARR_UNREACHABLE');
+  });
+
+  it('refuses to grab when Prowlarr is not configured', async () => {
+    delete process.env.PROWLARR_URL;
+    await linkedMovie();
+    const res = await grab();
+    assert.strictEqual(res.status, 503);
+    assert.strictEqual(res.body.code, 'DISABLED');
+    assert.strictEqual(outbound.length, 0);
+  });
+
+  it('sends every grab to Prowlarr, never answering from a cache', async () => {
+    await linkedMovie();
+    await grab();
+    await grab();
+    assert.strictEqual(grabs().length, 2);
+  });
+
+  it('refuses non-admins', async () => {
+    await linkedMovie();
+    const agent = await asUser();
+    const res = await agent
+      .post('/manualsearch/grab')
+      .send({ mediaType: 'movie', tmdbId: 915935, release: pushedRelease() });
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(outbound.length, 0);
+  });
+});
+
+describe('POST /manualsearch/grab, TV', () => {
+  beforeEach(() => {
+    process.env.PROWLARR_MOVIE_CLIENT = 'qBittorrent Radarr';
+    process.env.PROWLARR_TV_CLIENT = 'qBittorrent Sonarr';
+    httpResponder = prowlarrResponder;
+  });
+
+  afterEach(() => {
+    delete process.env.PROWLARR_MOVIE_CLIENT;
+    delete process.env.PROWLARR_TV_CLIENT;
+  });
+
+  const grab = async () => {
+    const agent = await asAdmin();
+    return agent.post('/manualsearch/grab').send({
+      mediaType: 'tv',
+      tmdbId: 95396,
+      release: pushedEpisodeRelease(),
+    });
+  };
+
+  it('grabs through the Prowlarr client named for TV', async () => {
+    await linkedSeries();
+    const res = await grab();
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(res.body, { status: 'grabbed' });
+    assert.deepStrictEqual(grabs()[0].body, {
+      guid: 'https://1337x.to/torrent/2',
+      indexerId: 3,
+      downloadClientId: 2,
+    });
+  });
+
+  it('answers 409 when only the movie client is set', async () => {
+    delete process.env.PROWLARR_TV_CLIENT;
+    await linkedSeries();
+    const res = await grab();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'GRAB_UNAVAILABLE');
+    assert.strictEqual(grabs().length, 0);
+  });
+
+  it('answers 409 without grabbing when Prowlarr has no TV client by that name', async () => {
+    process.env.PROWLARR_TV_CLIENT = 'qBittorrent TV';
+    await linkedSeries();
+    const res = await grab();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'GRAB_UNAVAILABLE');
+    assert.strictEqual(grabs().length, 0);
+  });
+
+  it('answers 409 without asking Prowlarr when the series is not in Sonarr', async () => {
+    await linkedSeries({ externalServiceId: null });
+    const res = await grab();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
+    assert.strictEqual(outbound.length, 0);
+  });
+
+  it("answers 410 when the Release dropped out of Prowlarr's search cache", async () => {
+    await linkedSeries();
+    httpResponder = (req) => {
+      if (req.method === 'post') {
+        throw httpError(404);
+      }
+      return prowlarrResponder(req);
+    };
+    const res = await grab();
+    assert.strictEqual(res.status, 410);
+    assert.strictEqual(res.body.code, 'SEARCH_EXPIRED');
+  });
+});
+
+describe('GET /manualsearch/options, Prowlarr Grab', () => {
+  beforeEach(() => {
+    process.env.PROWLARR_MOVIE_CLIENT = 'qBittorrent Radarr';
+    process.env.PROWLARR_TV_CLIENT = 'qBittorrent Sonarr';
+    httpResponder = prowlarrResponder;
+  });
+
+  afterEach(() => {
+    delete process.env.PROWLARR_MOVIE_CLIENT;
+    delete process.env.PROWLARR_TV_CLIENT;
+  });
+
+  const options = async (mediaType: 'movie' | 'tv') => {
+    const agent = await asAdmin();
+    return agent
+      .get('/manualsearch/options')
+      .query({ mediaType, tmdbId: mediaType === 'tv' ? 95396 : 915935 });
+  };
+
+  it('reports the grab available for a movie in Radarr whose client exists', async () => {
+    await linkedMovie();
+    const res = await options('movie');
+    assert.strictEqual(res.body.prowlarrGrabAvailable, true);
+    assert.strictEqual(clientLookups().length, 1);
+  });
+
+  it('reports it unavailable when the movie client env var is unset', async () => {
+    delete process.env.PROWLARR_MOVIE_CLIENT;
+    await linkedMovie();
+    const res = await options('movie');
+    assert.strictEqual(res.body.prowlarrGrabAvailable, false);
+  });
+
+  it('reports it unavailable when Prowlarr has no client by that name', async () => {
+    process.env.PROWLARR_MOVIE_CLIENT = 'Transmission';
+    await linkedMovie();
+    const res = await options('movie');
+    assert.strictEqual(res.body.prowlarrGrabAvailable, false);
+  });
+
+  it('reports it unavailable, without asking Prowlarr, for a movie not in Radarr', async () => {
+    await linkedMovie({ externalServiceId: null });
+    const res = await options('movie');
+    assert.strictEqual(res.body.prowlarrGrabAvailable, false);
+    assert.strictEqual(clientLookups().length, 0);
+  });
+
+  it('reports it unavailable, rather than failing, when Prowlarr is unreachable', async () => {
+    await linkedMovie();
+    httpResponder = () => {
+      throw networkError();
+    };
+    const res = await options('movie');
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.enabled, true);
+    assert.strictEqual(res.body.prowlarrGrabAvailable, false);
+  });
+
+  it('reports the grab available for a series in Sonarr whose client exists', async () => {
+    await linkedSeries();
+    const res = await options('tv');
+    assert.strictEqual(res.body.prowlarrGrabAvailable, true);
+  });
+
+  it('reports it unavailable for a series when only the movie client is set', async () => {
+    delete process.env.PROWLARR_TV_CLIENT;
+    await linkedSeries();
+    const res = await options('tv');
+    assert.strictEqual(res.body.prowlarrGrabAvailable, false);
   });
 });

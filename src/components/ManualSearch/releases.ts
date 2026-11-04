@@ -29,13 +29,18 @@ export const sortAndFilterReleases = (
   return [...matching].sort(comparators[sort]);
 };
 
-/** Where a Release card stands in its Push to Radarr/Sonarr. */
+/**
+ * Where a Release card stands in its Push to Radarr/Sonarr, and in the
+ * Prowlarr Grab that may follow a rejection.
+ */
 export type CardState =
   | { status: 'idle' }
   | { status: 'pushing' }
   | { status: 'approved' }
   | { status: 'pending' }
-  | { status: 'rejected'; rejections: string[] };
+  | { status: 'rejected'; rejections: string[] }
+  | { status: 'prowlarrGrabbing'; rejections: string[] }
+  | { status: 'prowlarrGrabbed' };
 
 export const releaseKey = (release: Release) =>
   `${release.indexerId}-${release.guid}`;
