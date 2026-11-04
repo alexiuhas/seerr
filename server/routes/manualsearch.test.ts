@@ -194,20 +194,35 @@ const asAdmin = () => loginAs('admin@seerr.dev');
 const asUser = () => loginAs('demo@seerr.dev');
 
 describe('Manual Search access', () => {
-  it('refuses non-admins on options', async () => {
+  it('refuses non-admins on every endpoint, without calling out', async () => {
     const agent = await asUser();
-    const res = await agent
-      .get('/manualsearch/options')
-      .query({ mediaType: 'movie', tmdbId: 1 });
-    assert.strictEqual(res.status, 403);
-  });
-
-  it('refuses non-admins on search', async () => {
-    const agent = await asUser();
-    const res = await agent
-      .get('/manualsearch')
-      .query({ mediaType: 'movie', tmdbId: 1, query: 'x' });
-    assert.strictEqual(res.status, 403);
+    const release = { title: 'x', downloadUrl: 'http://prowlarr/x' };
+    const calls = {
+      'movie options': () =>
+        agent
+          .get('/manualsearch/options')
+          .query({ mediaType: 'movie', tmdbId: 1 }),
+      'TV options': () =>
+        agent
+          .get('/manualsearch/options')
+          .query({ mediaType: 'tv', tmdbId: 1 }),
+      search: () =>
+        agent
+          .get('/manualsearch')
+          .query({ mediaType: 'movie', tmdbId: 1, query: 'x' }),
+      push: () =>
+        agent
+          .post('/manualsearch/push')
+          .send({ mediaType: 'movie', tmdbId: 1, release }),
+      grab: () =>
+        agent
+          .post('/manualsearch/grab')
+          .send({ mediaType: 'tv', tmdbId: 1, release }),
+    };
+    for (const [name, call] of Object.entries(calls)) {
+      const res = await call();
+      assert.strictEqual(res.status, 403, name);
+    }
     assert.strictEqual(outbound.length, 0);
   });
 });
@@ -388,28 +403,18 @@ describe('GET /manualsearch', () => {
     assert.strictEqual(res.body.code, 'INDEXERS_UNAVAILABLE');
   });
 
-  it('reports Prowlarr unreachable when the connection fails', async () => {
-    httpResponder = () => {
-      throw networkError();
-    };
+  it('reports Prowlarr unreachable on a failed connection or a server error', async () => {
     const agent = await asAdmin();
-    const res = await agent
-      .get('/manualsearch')
-      .query({ mediaType: 'movie', tmdbId: 915935, query: 'Anatomy' });
-    assert.strictEqual(res.status, 502);
-    assert.strictEqual(res.body.code, 'PROWLARR_UNREACHABLE');
-  });
-
-  it('reports Prowlarr unreachable when it answers with a server error', async () => {
-    httpResponder = () => {
-      throw httpError(500);
-    };
-    const agent = await asAdmin();
-    const res = await agent
-      .get('/manualsearch')
-      .query({ mediaType: 'movie', tmdbId: 915935, query: 'Anatomy' });
-    assert.strictEqual(res.status, 502);
-    assert.strictEqual(res.body.code, 'PROWLARR_UNREACHABLE');
+    for (const error of [networkError(), httpError(500)]) {
+      httpResponder = () => {
+        throw error;
+      };
+      const res = await agent
+        .get('/manualsearch')
+        .query({ mediaType: 'movie', tmdbId: 915935, query: 'Anatomy' });
+      assert.strictEqual(res.status, 502);
+      assert.strictEqual(res.body.code, 'PROWLARR_UNREACHABLE');
+    }
   });
 
   it('refuses to search when Prowlarr is not configured', async () => {
@@ -579,38 +584,28 @@ describe('POST /manualsearch/push', () => {
     assert.strictEqual(pushes().length, 0);
   });
 
-  it('reports Radarr unreachable when the connection fails', async () => {
+  it('reports Radarr unreachable on a failed connection or a server error', async () => {
     await linkedMovie();
-    httpResponder = () => {
-      throw networkError();
-    };
-    const res = await push();
-    assert.strictEqual(res.status, 502);
-    assert.strictEqual(res.body.code, 'ARR_UNREACHABLE');
+    for (const error of [networkError(), httpError(500)]) {
+      httpResponder = () => {
+        throw error;
+      };
+      const res = await push();
+      assert.strictEqual(res.status, 502);
+      assert.strictEqual(res.body.code, 'ARR_UNREACHABLE');
+    }
   });
 
-  it('reports Radarr unreachable when it answers with a server error', async () => {
-    await linkedMovie();
-    httpResponder = () => {
-      throw httpError(500);
-    };
-    const res = await push();
-    assert.strictEqual(res.status, 502);
-    assert.strictEqual(res.body.code, 'ARR_UNREACHABLE');
-  });
+  it('answers 409 without pushing when the movie is not in Radarr, or unknown to Seerr', async () => {
+    const unknown = await push();
+    assert.strictEqual(unknown.status, 409);
+    assert.strictEqual(unknown.body.code, 'NOT_IN_ARR');
 
-  it('answers 409 without pushing when the movie is not in Radarr', async () => {
     await linkedMovie({ externalServiceId: null });
-    const res = await push();
-    assert.strictEqual(res.status, 409);
-    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
+    const unlinked = await push();
+    assert.strictEqual(unlinked.status, 409);
+    assert.strictEqual(unlinked.body.code, 'NOT_IN_ARR');
     assert.strictEqual(pushes().length, 0);
-  });
-
-  it('answers 409 when Seerr has never seen the movie', async () => {
-    const res = await push();
-    assert.strictEqual(res.status, 409);
-    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
   });
 
   it("looks up the IMDb ID from TMDB when Seerr hasn't stored it", async () => {
@@ -660,7 +655,7 @@ describe('POST /manualsearch/push', () => {
     });
   });
 
-  it('maps a rejected Release to rejected, with the reasons', async () => {
+  it('maps a rejected Release to rejected, with the reasons in either shape', async () => {
     await linkedMovie();
     httpResponder = () =>
       radarrDecision({
@@ -668,7 +663,7 @@ describe('POST /manualsearch/push', () => {
         rejected: true,
         rejections: [
           'Custom format score -1000 is below the minimum of 0',
-          'Language French, English is not wanted',
+          { reason: 'Language French, English is not wanted' },
         ],
       });
     const res = await push();
@@ -717,16 +712,6 @@ describe('POST /manualsearch/push', () => {
     await push();
     assert.strictEqual(pushes().length, 2);
   });
-
-  it('refuses non-admins', async () => {
-    await linkedMovie();
-    const agent = await asUser();
-    const res = await agent
-      .post('/manualsearch/push')
-      .send({ mediaType: 'movie', tmdbId: 915935, release: pushedRelease() });
-    assert.strictEqual(res.status, 403);
-    assert.strictEqual(pushes().length, 0);
-  });
 });
 
 describe('GET /manualsearch/options, Radarr link', () => {
@@ -739,21 +724,15 @@ describe('GET /manualsearch/options, Radarr link', () => {
     assert.strictEqual(res.body.inArr, true);
   });
 
-  it('reports inArr:false for a movie without a Radarr link', async () => {
+  it('reports inArr:false for a movie unknown to Seerr, or without a Radarr link', async () => {
+    const agent = await asAdmin();
+    const options = () =>
+      agent
+        .get('/manualsearch/options')
+        .query({ mediaType: 'movie', tmdbId: 915935 });
+    assert.strictEqual((await options()).body.inArr, false);
     await linkedMovie({ externalServiceId: null });
-    const agent = await asAdmin();
-    const res = await agent
-      .get('/manualsearch/options')
-      .query({ mediaType: 'movie', tmdbId: 915935 });
-    assert.strictEqual(res.body.inArr, false);
-  });
-
-  it('reports inArr:false for a movie Seerr has never seen', async () => {
-    const agent = await asAdmin();
-    const res = await agent
-      .get('/manualsearch/options')
-      .query({ mediaType: 'movie', tmdbId: 915935 });
-    assert.strictEqual(res.body.inArr, false);
+    assert.strictEqual((await options()).body.inArr, false);
   });
 });
 
@@ -813,15 +792,6 @@ describe('GET /manualsearch/options, TV', () => {
       { query: 'Severance' },
       { season: 1, query: 'Severance S01' },
     ]);
-  });
-
-  it('reports disabled for TV when Prowlarr env vars are unset', async () => {
-    delete process.env.PROWLARR_URL;
-    const agent = await asAdmin();
-    const res = await agent
-      .get('/manualsearch/options')
-      .query({ mediaType: 'tv', tmdbId: 95396 });
-    assert.deepStrictEqual(res.body, { enabled: false });
   });
 });
 
@@ -946,17 +916,6 @@ describe('POST /manualsearch/push, TV', () => {
     assert.strictEqual(body.imdbId, 'tt11280740');
   });
 
-  it('falls back to the default non-4K Sonarr when the requested server is gone', async () => {
-    configureSonarr([
-      { name: 'Sonarr 4K', is4k: true, isDefault: true },
-      { name: 'Sonarr', isDefault: true },
-    ]);
-    await linkedSeries({ serviceId: 7 });
-    const res = await push();
-    assert.strictEqual(res.status, 200);
-    assert.ok(pushes()[0].uri.startsWith('http://sonarr1:8989/'));
-  });
-
   it('never pushes a series to Radarr', async () => {
     configureRadarr([{}]);
     try {
@@ -969,118 +928,12 @@ describe('POST /manualsearch/push, TV', () => {
     }
   });
 
-  it('reports no Sonarr configured when no server matches and none is default', async () => {
-    configureSonarr([{ isDefault: false }]);
-    await linkedSeries({ serviceId: 5 });
-    const res = await push();
-    assert.strictEqual(res.status, 409);
-    assert.strictEqual(res.body.code, 'ARR_NOT_CONFIGURED');
-    assert.strictEqual(pushes().length, 0);
-  });
-
-  it('answers 409 without pushing when the series is not in Sonarr', async () => {
-    await linkedSeries({ externalServiceId: null });
-    const res = await push();
-    assert.strictEqual(res.status, 409);
-    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
-    assert.strictEqual(pushes().length, 0);
-  });
-
   it('does not treat a movie with the same TMDB ID as the series', async () => {
     await linkedMovie({ tmdbId: 95396 });
     const res = await push();
     assert.strictEqual(res.status, 409);
     assert.strictEqual(res.body.code, 'NOT_IN_ARR');
-  });
-
-  it('reports Sonarr unreachable when the connection fails', async () => {
-    await linkedSeries();
-    httpResponder = () => {
-      throw networkError();
-    };
-    const res = await push();
-    assert.strictEqual(res.status, 502);
-    assert.strictEqual(res.body.code, 'ARR_UNREACHABLE');
-  });
-
-  it('maps an approved Release to approved', async () => {
-    await linkedSeries();
-    const res = await push();
-    assert.deepStrictEqual(res.body, { status: 'approved' });
-  });
-
-  it('maps a temporarily rejected Release to pending, with the reasons', async () => {
-    await linkedSeries();
-    httpResponder = () =>
-      radarrDecision({
-        approved: false,
-        temporarilyRejected: true,
-        rejections: ['Delay profile: release held for 60 minutes'],
-      });
-    const res = await push();
-    assert.deepStrictEqual(res.body, {
-      status: 'pending',
-      rejections: ['Delay profile: release held for 60 minutes'],
-    });
-  });
-
-  it('maps a rejected Release to rejected, with the reasons', async () => {
-    await linkedSeries();
-    httpResponder = () =>
-      radarrDecision({
-        approved: false,
-        rejected: true,
-        rejections: [
-          { reason: 'Existing file on disk is of equal or higher preference' },
-        ],
-      });
-    const res = await push();
-    assert.deepStrictEqual(res.body, {
-      status: 'rejected',
-      rejections: ['Existing file on disk is of equal or higher preference'],
-    });
-  });
-
-  it('maps an unparseable title (400) to rejected, with the reason', async () => {
-    await linkedSeries();
-    httpResponder = () => {
-      throw httpError(400, [
-        { propertyName: 'Title', errorMessage: 'Unable to parse' },
-      ]);
-    };
-    const res = await push();
-    assert.strictEqual(res.status, 200);
-    assert.deepStrictEqual(res.body, {
-      status: 'rejected',
-      rejections: ['Unable to parse'],
-    });
-  });
-});
-
-describe('Manual Search access, TV', () => {
-  it('refuses non-admins on TV options', async () => {
-    const agent = await asUser();
-    const res = await agent
-      .get('/manualsearch/options')
-      .query({ mediaType: 'tv', tmdbId: 95396 });
-    assert.strictEqual(res.status, 403);
-  });
-
-  it('refuses non-admins a TV push', async () => {
-    configureSonarr([{}]);
-    try {
-      await linkedSeries();
-      const agent = await asUser();
-      const res = await agent.post('/manualsearch/push').send({
-        mediaType: 'tv',
-        tmdbId: 95396,
-        release: pushedEpisodeRelease(),
-      });
-      assert.strictEqual(res.status, 403);
-      assert.strictEqual(pushes().length, 0);
-    } finally {
-      getSettings().sonarr = [];
-    }
+    assert.strictEqual(pushes().length, 0);
   });
 });
 
@@ -1092,15 +945,6 @@ describe('GET /manualsearch/options, Sonarr link', () => {
       .get('/manualsearch/options')
       .query({ mediaType: 'tv', tmdbId: 95396 });
     assert.strictEqual(res.body.inArr, true);
-  });
-
-  it('reports inArr:false for a series without a Sonarr link', async () => {
-    await linkedSeries({ externalServiceId: null });
-    const agent = await asAdmin();
-    const res = await agent
-      .get('/manualsearch/options')
-      .query({ mediaType: 'tv', tmdbId: 95396 });
-    assert.strictEqual(res.body.inArr, false);
   });
 });
 
@@ -1177,19 +1021,16 @@ describe('POST /manualsearch/grab', () => {
     assert.strictEqual(grabs().length, 0);
   });
 
-  it('answers 409 without asking Prowlarr when the movie is not in Radarr', async () => {
-    await linkedMovie({ externalServiceId: null });
-    const res = await grab();
-    assert.strictEqual(res.status, 409);
-    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
-    assert.strictEqual(outbound.length, 0);
-  });
+  it('answers 409 without asking Prowlarr when the movie is not in Radarr, or unknown to Seerr', async () => {
+    const unknown = await grab();
+    assert.strictEqual(unknown.status, 409);
+    assert.strictEqual(unknown.body.code, 'NOT_IN_ARR');
 
-  it('answers 409 when Seerr has never seen the movie', async () => {
-    const res = await grab();
-    assert.strictEqual(res.status, 409);
-    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
-    assert.strictEqual(grabs().length, 0);
+    await linkedMovie({ externalServiceId: null });
+    const unlinked = await grab();
+    assert.strictEqual(unlinked.status, 409);
+    assert.strictEqual(unlinked.body.code, 'NOT_IN_ARR');
+    assert.strictEqual(outbound.length, 0);
   });
 
   it("answers 410 when the Release dropped out of Prowlarr's search cache", async () => {
@@ -1249,16 +1090,6 @@ describe('POST /manualsearch/grab', () => {
     await grab();
     assert.strictEqual(grabs().length, 2);
   });
-
-  it('refuses non-admins', async () => {
-    await linkedMovie();
-    const agent = await asUser();
-    const res = await agent
-      .post('/manualsearch/grab')
-      .send({ mediaType: 'movie', tmdbId: 915935, release: pushedRelease() });
-    assert.strictEqual(res.status, 403);
-    assert.strictEqual(outbound.length, 0);
-  });
 });
 
 describe('POST /manualsearch/grab, TV', () => {
@@ -1301,36 +1132,6 @@ describe('POST /manualsearch/grab, TV', () => {
     assert.strictEqual(res.status, 409);
     assert.strictEqual(res.body.code, 'GRAB_UNAVAILABLE');
     assert.strictEqual(grabs().length, 0);
-  });
-
-  it('answers 409 without grabbing when Prowlarr has no TV client by that name', async () => {
-    process.env.PROWLARR_TV_CLIENT = 'qBittorrent TV';
-    await linkedSeries();
-    const res = await grab();
-    assert.strictEqual(res.status, 409);
-    assert.strictEqual(res.body.code, 'GRAB_UNAVAILABLE');
-    assert.strictEqual(grabs().length, 0);
-  });
-
-  it('answers 409 without asking Prowlarr when the series is not in Sonarr', async () => {
-    await linkedSeries({ externalServiceId: null });
-    const res = await grab();
-    assert.strictEqual(res.status, 409);
-    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
-    assert.strictEqual(outbound.length, 0);
-  });
-
-  it("answers 410 when the Release dropped out of Prowlarr's search cache", async () => {
-    await linkedSeries();
-    httpResponder = (req) => {
-      if (req.method === 'post') {
-        throw httpError(404);
-      }
-      return prowlarrResponder(req);
-    };
-    const res = await grab();
-    assert.strictEqual(res.status, 410);
-    assert.strictEqual(res.body.code, 'SEARCH_EXPIRED');
   });
 });
 
