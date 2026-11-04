@@ -7,8 +7,12 @@ import { queryPresets } from '@app/components/ManualSearch/queryPresets';
 import type {
   CardState,
   ReleaseSort,
+  ReleaseSortKey,
+  SortDirection,
 } from '@app/components/ManualSearch/releases';
 import {
+  DEFAULT_SORT,
+  nextSort,
   releaseKey,
   sortAndFilterReleases,
 } from '@app/components/ManualSearch/releases';
@@ -17,7 +21,6 @@ import useToasts from '@app/hooks/useToasts';
 import defineMessages from '@app/utils/defineMessages';
 import { ArrowDownIcon, ArrowUpIcon } from '@heroicons/react/20/solid';
 import {
-  BarsArrowDownIcon,
   InformationCircleIcon,
   MagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
@@ -53,9 +56,12 @@ const messages = defineMessages('components.ManualSearch', {
   sortseeders: 'Seeders',
   sortsize: 'Size',
   sortage: 'Age',
-  sortseedersorder: 'Most seeders first',
-  sortsizeorder: 'Smallest first',
-  sortageorder: 'Newest first',
+  sortseedersdesc: 'Most seeders first',
+  sortseedersasc: 'Fewest seeders first',
+  sortsizeasc: 'Smallest first',
+  sortsizedesc: 'Largest first',
+  sortageasc: 'Newest first',
+  sortagedesc: 'Oldest first',
   filterreleases: 'Filter…',
   releasecount: '{count, plural, one {# release} other {# releases}}',
   noresults: 'No releases found. Try another query.',
@@ -92,14 +98,22 @@ const messages = defineMessages('components.ManualSearch', {
 
 const IDLE: CardState = { status: 'idle' };
 
-const SORTS: ReleaseSort[] = ['seeders', 'size', 'age'];
+const SORTS: ReleaseSortKey[] = ['seeders', 'size', 'age'];
 
-// Which way each sort runs, by the value it sorts on (see releases.ts).
-const SORT_ORDER = {
-  seeders: { Icon: ArrowDownIcon, label: messages.sortseedersorder },
-  size: { Icon: ArrowUpIcon, label: messages.sortsizeorder },
-  age: { Icon: ArrowUpIcon, label: messages.sortageorder },
-} as const;
+// The arrow follows the sorted value: down is largest first.
+const SORT_ICON: Record<SortDirection, typeof ArrowDownIcon> = {
+  asc: ArrowUpIcon,
+  desc: ArrowDownIcon,
+};
+
+const SORT_ORDER_LABEL: Record<
+  ReleaseSortKey,
+  Record<SortDirection, typeof messages.sortseedersdesc>
+> = {
+  seeders: { desc: messages.sortseedersdesc, asc: messages.sortseedersasc },
+  size: { asc: messages.sortsizeasc, desc: messages.sortsizedesc },
+  age: { asc: messages.sortageasc, desc: messages.sortagedesc },
+};
 
 type SearchError = ManualSearchErrorCode | 'UNKNOWN';
 
@@ -136,7 +150,7 @@ const ManualSearchPanel = ({
   // Kept across searches, so a Release already Pushed can't be Pushed twice.
   const [cards, setCards] = useState<Record<string, CardState>>({});
   const [query, setQuery] = useState(queries.english);
-  const [sort, setSort] = useState<ReleaseSort>('seeders');
+  const [sort, setSort] = useState<ReleaseSort>(DEFAULT_SORT);
   const [filter, setFilter] = useState('');
   const [releases, setReleases] = useState<Release[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -430,29 +444,38 @@ const ManualSearchPanel = ({
           ) : releases ? (
             <>
               {releases.length > 0 && (
-                <div className="sticky top-0 z-10 -mx-4 -mt-4 flex flex-col gap-2 bg-gray-800/95 px-4 py-3 backdrop-blur">
+                <div className="flex flex-col gap-2">
                   <div className="flex flex-wrap items-stretch gap-2">
+                    <label htmlFor="manual-search-filter" className="sr-only">
+                      {intl.formatMessage(messages.filterreleases)}
+                    </label>
+                    <input
+                      id="manual-search-filter"
+                      type="text"
+                      value={filter}
+                      onChange={(e) => setFilter(e.target.value)}
+                      placeholder={intl.formatMessage(messages.filterreleases)}
+                      className="min-w-0 flex-1"
+                    />
                     <div
                       role="group"
                       aria-label={intl.formatMessage(messages.sortby)}
                       className="inline-flex overflow-hidden rounded-md border border-gray-500"
                     >
-                      <span
-                        aria-hidden="true"
-                        className="flex items-center border-r border-gray-500 px-2 text-gray-400"
-                      >
-                        <BarsArrowDownIcon className="h-4 w-4" />
-                      </span>
                       {SORTS.map((key) => {
-                        const active = sort === key;
-                        const { Icon, label } = SORT_ORDER[key];
+                        const active = sort.key === key;
+                        // active: the current order; others: the order a tap starts in
+                        const shown = active ? sort : nextSort(sort, key);
+                        const Icon = SORT_ICON[sort.direction];
                         return (
                           <button
                             key={key}
                             type="button"
                             aria-pressed={active}
-                            title={intl.formatMessage(label)}
-                            onClick={() => setSort(key)}
+                            title={intl.formatMessage(
+                              SORT_ORDER_LABEL[key][shown.direction]
+                            )}
+                            onClick={() => setSort(nextSort(sort, key))}
                             className={`flex items-center gap-0.5 px-2.5 py-1 text-xs ${
                               active
                                 ? 'bg-gray-600 text-white'
@@ -467,17 +490,6 @@ const ManualSearchPanel = ({
                         );
                       })}
                     </div>
-                    <label htmlFor="manual-search-filter" className="sr-only">
-                      {intl.formatMessage(messages.filterreleases)}
-                    </label>
-                    <input
-                      id="manual-search-filter"
-                      type="text"
-                      value={filter}
-                      onChange={(e) => setFilter(e.target.value)}
-                      placeholder={intl.formatMessage(messages.filterreleases)}
-                      className="min-w-0 flex-1"
-                    />
                   </div>
                   <div className="text-xs tabular-nums text-gray-400">
                     {intl.formatMessage(messages.releasecount, {
