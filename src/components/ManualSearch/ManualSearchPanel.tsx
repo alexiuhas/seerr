@@ -2,6 +2,7 @@ import Alert from '@app/components/Common/Alert';
 import Button from '@app/components/Common/Button';
 import SlideOver from '@app/components/Common/SlideOver';
 import ReleaseCard from '@app/components/ManualSearch/ReleaseCard';
+import { useHorizontalWheelScroll } from '@app/components/ManualSearch/horizontalWheel';
 import type { QueryPreset } from '@app/components/ManualSearch/queryPresets';
 import { queryPresets } from '@app/components/ManualSearch/queryPresets';
 import type {
@@ -374,6 +375,8 @@ const ManualSearchPanel = ({
   );
 
   const presets = queryPresets(queries, scopes);
+  // a long season list scrolls sideways with the mouse wheel
+  const chipRowRef = useHorizontalWheelScroll();
   const presetLabel = (preset: QueryPreset) => {
     switch (preset.kind) {
       case 'english':
@@ -465,6 +468,7 @@ const ManualSearchPanel = ({
 
         {presets.length > 0 && (
           <div
+            ref={chipRowRef}
             role="group"
             aria-label={intl.formatMessage(messages.searchfor)}
             className="hide-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4"
