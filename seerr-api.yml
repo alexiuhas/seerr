@@ -8302,6 +8302,150 @@ paths:
         '500':
           description: Unable to evaluate override rules
 
+  # --- ManualSearch (fork: alexiuhas/seerr) ---------------------------------
+  # Self-contained on purpose: inline schemas only, so upstream rebases touch
+  # nothing else in this file. Every route requires the ADMIN permission.
+  /manualsearch/options:
+    get:
+      summary: Get Manual Search options for a media item
+      description: Returns whether Manual Search is enabled (Prowlarr configured) and the prefilled search queries. Requires the `ADMIN` permission.
+      tags:
+        - other
+      parameters:
+        - in: query
+          name: mediaType
+          required: true
+          schema:
+            type: string
+            enum: [movie]
+        - in: query
+          name: tmdbId
+          required: true
+          schema:
+            type: number
+            example: 915935
+      responses:
+        '200':
+          description: Manual Search options
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled]
+                properties:
+                  enabled:
+                    type: boolean
+                    example: true
+                  queries:
+                    type: object
+                    required: [english]
+                    properties:
+                      english:
+                        type: string
+                        example: Anatomy of a Fall 2023
+                      original:
+                        type: string
+                        example: Anatomie d'une chute 2023
+        '403':
+          description: Requires the ADMIN permission
+  /manualsearch:
+    get:
+      summary: Search Prowlarr for Releases
+      description: Runs a free-text Prowlarr search in the media type's categories and returns torrent Releases only. Requires the `ADMIN` permission.
+      tags:
+        - other
+      parameters:
+        - in: query
+          name: mediaType
+          required: true
+          schema:
+            type: string
+            enum: [movie]
+        - in: query
+          name: tmdbId
+          required: true
+          schema:
+            type: number
+            example: 915935
+        - in: query
+          name: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            example: Anatomy of a Fall 2023
+      responses:
+        '200':
+          description: Releases found by Prowlarr
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        guid:
+                          type: string
+                        indexerId:
+                          type: number
+                        indexer:
+                          type: string
+                          example: 1337x
+                        title:
+                          type: string
+                          example: Anatomy.of.a.Fall.2023.1080p.BluRay.x264-PiGNUS
+                        size:
+                          type: number
+                          description: Size in bytes
+                        seeders:
+                          type: number
+                        leechers:
+                          type: number
+                        publishDate:
+                          type: string
+                          format: date-time
+                        ageDays:
+                          type: number
+                        categories:
+                          type: array
+                          items:
+                            type: string
+                            example: Movies/HD
+                        downloadUrl:
+                          type: string
+                        infoUrl:
+                          type: string
+        '403':
+          description: Requires the ADMIN permission
+        '502':
+          description: Prowlarr is unreachable, or all its indexers are unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    enum: [INDEXERS_UNAVAILABLE, PROWLARR_UNREACHABLE]
+                  message:
+                    type: string
+        '503':
+          description: Prowlarr is not configured
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    enum: [DISABLED]
+                  message:
+                    type: string
+  # --- end ManualSearch -----------------------------------------------------
+
 security:
   - cookieAuth: []
   - apiKey: []
