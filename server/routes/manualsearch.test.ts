@@ -554,7 +554,8 @@ describe('POST /manualsearch/push', () => {
       seeders: 214,
       leechers: 12,
       tmdbId: 915935,
-      imdbId: 'tt17009710',
+      // Radarr reads imdbId as an int: the digits of tt17009710.
+      imdbId: 17009710,
     });
   });
 
@@ -613,8 +614,19 @@ describe('POST /manualsearch/push', () => {
     await linkedMovie({ imdbId: undefined });
     await push();
     assert.strictEqual(
-      (pushes()[0].body as { imdbId?: string }).imdbId,
-      'tt17009710'
+      (pushes()[0].body as { imdbId?: number }).imdbId,
+      17009710
+    );
+  });
+
+  it('leaves out an IMDb ID Radarr could not read as a number', async () => {
+    await linkedMovie({ imdbId: 'not-an-imdb-id' });
+    const res = await push();
+    assert.strictEqual(res.status, 200);
+    // undefined, so JSON drops it rather than sending null.
+    assert.strictEqual(
+      (pushes()[0].body as { imdbId?: number }).imdbId,
+      undefined
     );
   });
 
