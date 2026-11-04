@@ -33,7 +33,7 @@ const ManualSearchButton = ({
   const [show, setShow] = useState(false);
   const isAdmin = hasPermission(Permission.ADMIN);
 
-  const { data: options } = useSWR<ManualSearchOptionsResponse>(
+  const { data: options, mutate } = useSWR<ManualSearchOptionsResponse>(
     isAdmin
       ? `/api/v1/manualsearch/options?mediaType=${mediaType}&tmdbId=${tmdbId}`
       : null,
@@ -49,7 +49,11 @@ const ManualSearchButton = ({
       <Tooltip content={intl.formatMessage(messages.manualsearch)}>
         <Button
           buttonType="ghost"
-          onClick={() => setShow(true)}
+          onClick={() => {
+            setShow(true);
+            // a request made since the page loaded may have linked it to Radarr
+            mutate();
+          }}
           className="ml-2 first:ml-0"
           aria-label={intl.formatMessage(messages.manualsearch)}
         >
@@ -65,6 +69,7 @@ const ManualSearchButton = ({
         tmdbId={tmdbId}
         title={title}
         queries={options.queries}
+        inArr={!!options.inArr}
       />
     </>
   );

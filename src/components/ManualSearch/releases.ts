@@ -28,3 +28,14 @@ export const sortAndFilterReleases = (
     : releases;
   return [...matching].sort(comparators[sort]);
 };
+
+/** Where a Release card stands in its Push to Radarr. */
+export type CardState =
+  | { status: 'idle' }
+  | { status: 'pushing' }
+  | { status: 'approved' }
+  | { status: 'pending' }
+  | { status: 'rejected'; rejections: string[] };
+
+export const releaseKey = (release: Release) =>
+  `${release.indexerId}-${release.guid}`;

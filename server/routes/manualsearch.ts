@@ -3,15 +3,22 @@ import {
   IndexersUnavailableError,
   ProwlarrUnreachableError,
 } from '@server/api/prowlarr';
+import { ArrUnreachableError } from '@server/api/releasePush';
 import type {
   ManualSearchErrorCode,
   ManualSearchErrorResponse,
   ManualSearchOptionsResponse,
   ManualSearchResponse,
+  PushOutcome,
+  PushRequestBody,
 } from '@server/interfaces/api/manualSearchInterfaces';
 import {
+  ArrNotConfiguredError,
   getMovieQueries,
+  isMovieInArr,
   ManualSearchDisabledError,
+  NotInArrError,
+  pushMovieRelease,
   searchMovieReleases,
 } from '@server/lib/manualSearch';
 import { Permission } from '@server/lib/permissions';
@@ -42,8 +49,12 @@ manualSearchRoutes.get<
     return res.status(200).json({ enabled: false });
   }
   try {
-    const queries = await getMovieQueries(Number(req.query.tmdbId));
-    return res.status(200).json({ enabled: true, queries });
+    const tmdbId = Number(req.query.tmdbId);
+    const [queries, inArr] = await Promise.all([
+      getMovieQueries(tmdbId),
+      isMovieInArr(tmdbId),
+    ]);
+    return res.status(200).json({ enabled: true, queries, inArr });
   } catch (e) {
     logger.error('Manual Search could not build the search queries', {
       label: 'Manual Search',
@@ -75,6 +86,35 @@ manualSearchRoutes.get<
         errorMessage: e.message,
       });
       return sendError(res, 502, 'PROWLARR_UNREACHABLE', e.message);
+    }
+    return next({ status: 500, message: e.message });
+  }
+});
+
+manualSearchRoutes.post<
+  never,
+  PushOutcome | ManualSearchErrorResponse,
+  PushRequestBody
+>('/push', async (req, res, next) => {
+  try {
+    const outcome = await pushMovieRelease(
+      Number(req.body.tmdbId),
+      req.body.release
+    );
+    return res.status(200).json(outcome);
+  } catch (e) {
+    if (e instanceof NotInArrError) {
+      return sendError(res, 409, 'NOT_IN_ARR', e.message);
+    }
+    if (e instanceof ArrNotConfiguredError) {
+      return sendError(res, 409, 'ARR_NOT_CONFIGURED', e.message);
+    }
+    if (e instanceof ArrUnreachableError) {
+      logger.error('Manual Search could not push to Radarr', {
+        label: 'Manual Search',
+        errorMessage: e.message,
+      });
+      return sendError(res, 502, 'ARR_UNREACHABLE', e.message);
     }
     return next({ status: 500, message: e.message });
   }

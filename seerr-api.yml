@@ -8346,6 +8346,10 @@ paths:
                       original:
                         type: string
                         example: Anatomie d'une chute 2023
+                  inArr:
+                    type: boolean
+                    description: Whether the movie is linked to a Radarr movie, so a Release can be Pushed
+                    example: true
         '403':
           description: Requires the ADMIN permission
   /manualsearch:
@@ -8442,6 +8446,93 @@ paths:
                   code:
                     type: string
                     enum: [DISABLED]
+                  message:
+                    type: string
+  /manualsearch/push:
+    post:
+      summary: Push a Release to Radarr
+      description: Pushes a Release to the Radarr server holding the movie (the one it was requested on, else the default non-4K one) and returns Radarr's verdict. Requires the `ADMIN` permission.
+      tags:
+        - other
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mediaType, tmdbId, release]
+              properties:
+                mediaType:
+                  type: string
+                  enum: [movie]
+                tmdbId:
+                  type: number
+                  example: 915935
+                release:
+                  type: object
+                  required: [title, publishDate, downloadUrl]
+                  properties:
+                    guid:
+                      type: string
+                    title:
+                      type: string
+                      example: Anatomy.of.a.Fall.2023.1080p.BluRay.x264-PiGNUS
+                    publishDate:
+                      type: string
+                      format: date-time
+                    downloadUrl:
+                      type: string
+                    size:
+                      type: number
+                    indexer:
+                      type: string
+                    infoUrl:
+                      type: string
+                    seeders:
+                      type: number
+                    leechers:
+                      type: number
+      responses:
+        '200':
+          description: Radarr's verdict on the Release
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [approved, pending, rejected]
+                  rejections:
+                    type: array
+                    items:
+                      type: string
+                      example: Language French, English is not wanted
+        '403':
+          description: Requires the ADMIN permission
+        '409':
+          description: The movie is not in Radarr, or no Radarr server is configured for it
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    enum: [NOT_IN_ARR, ARR_NOT_CONFIGURED]
+                  message:
+                    type: string
+        '502':
+          description: Radarr is unreachable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    enum: [ARR_UNREACHABLE]
                   message:
                     type: string
   # --- end ManualSearch -----------------------------------------------------
