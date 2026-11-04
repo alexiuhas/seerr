@@ -21,6 +21,7 @@ import useToasts from '@app/hooks/useToasts';
 import defineMessages from '@app/utils/defineMessages';
 import { ArrowDownIcon, ArrowUpIcon } from '@heroicons/react/20/solid';
 import {
+  FunnelIcon,
   InformationCircleIcon,
   MagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
@@ -62,7 +63,8 @@ const messages = defineMessages('components.ManualSearch', {
   sortsizedesc: 'Largest first',
   sortageasc: 'Newest first',
   sortagedesc: 'Oldest first',
-  filterreleases: 'Filter…',
+  filterreleases: 'Filter releases…',
+  applyfilter: 'Apply',
   releasecount: '{count, plural, one {# release} other {# releases}}',
   noresults: 'No releases found. Try another query.',
   nomatches: 'No releases match the filter.',
@@ -97,6 +99,11 @@ const messages = defineMessages('components.ManualSearch', {
 });
 
 const IDLE: CardState = { status: 'idle' };
+
+// Matches the colours of Seerr's main search input (Layout/SearchInput).
+// `!` beats the global input[type='text'] rule, as elsewhere in upstream.
+const INPUT_CLASS =
+  'min-w-0 flex-1 !border-gray-600 !bg-gray-900/80 placeholder:text-gray-300 hover:!border-gray-500 focus:!border-gray-500 focus:!bg-gray-900 focus:ring-0 focus:placeholder:text-gray-400';
 
 const SORTS: ReleaseSortKey[] = ['seeders', 'size', 'age'];
 
@@ -151,6 +158,8 @@ const ManualSearchPanel = ({
   const [cards, setCards] = useState<Record<string, CardState>>({});
   const [query, setQuery] = useState(queries.english);
   const [sort, setSort] = useState<ReleaseSort>(DEFAULT_SORT);
+  // What's typed in the filter box; it narrows the list once applied.
+  const [filterDraft, setFilterDraft] = useState('');
   const [filter, setFilter] = useState('');
   const [releases, setReleases] = useState<Release[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -384,7 +393,7 @@ const ManualSearchPanel = ({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={intl.formatMessage(messages.searchprowlarr)}
-            className="min-w-0 flex-1"
+            className={INPUT_CLASS}
           />
           <Button
             type="submit"
@@ -444,23 +453,51 @@ const ManualSearchPanel = ({
           ) : releases ? (
             <>
               {releases.length > 0 && (
-                <div className="flex flex-col gap-2">
-                  <div className="flex flex-wrap items-stretch gap-2">
+                <>
+                  <form
+                    className="flex gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      setFilter(filterDraft);
+                    }}
+                  >
                     <label htmlFor="manual-search-filter" className="sr-only">
                       {intl.formatMessage(messages.filterreleases)}
                     </label>
                     <input
                       id="manual-search-filter"
                       type="text"
-                      value={filter}
-                      onChange={(e) => setFilter(e.target.value)}
+                      enterKeyHint="done"
+                      value={filterDraft}
+                      onChange={(e) => setFilterDraft(e.target.value)}
                       placeholder={intl.formatMessage(messages.filterreleases)}
-                      className="min-w-0 flex-1"
+                      className={INPUT_CLASS}
+                    />
+                    <Button
+                      type="submit"
+                      buttonType="primary"
+                      disabled={filterDraft === filter}
+                    >
+                      <FunnelIcon />
+                      <span className="hidden sm:inline">
+                        {intl.formatMessage(messages.applyfilter)}
+                      </span>
+                    </Button>
+                  </form>
+                  <div className="flex items-center gap-3">
+                    <span className="shrink-0 text-xs tabular-nums text-gray-400">
+                      {intl.formatMessage(messages.releasecount, {
+                        count: visibleReleases.length,
+                      })}
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className="h-px flex-1 bg-gray-600"
                     />
                     <div
                       role="group"
                       aria-label={intl.formatMessage(messages.sortby)}
-                      className="inline-flex overflow-hidden rounded-md border border-gray-500"
+                      className="flex shrink-0 items-center gap-0.5"
                     >
                       {SORTS.map((key) => {
                         const active = sort.key === key;
@@ -476,27 +513,25 @@ const ManualSearchPanel = ({
                               SORT_ORDER_LABEL[key][shown.direction]
                             )}
                             onClick={() => setSort(nextSort(sort, key))}
-                            className={`flex items-center gap-0.5 px-2.5 py-1 text-xs ${
+                            className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs ${
                               active
-                                ? 'bg-gray-600 text-white'
-                                : 'text-gray-300 hover:bg-gray-700'
+                                ? 'font-semibold text-white'
+                                : 'text-gray-400 hover:text-gray-200'
                             }`}
                           >
                             {intl.formatMessage(sortLabel[key])}
                             {active && (
-                              <Icon aria-hidden="true" className="h-3 w-3" />
+                              <Icon
+                                aria-hidden="true"
+                                className="h-3 w-3 text-indigo-300"
+                              />
                             )}
                           </button>
                         );
                       })}
                     </div>
                   </div>
-                  <div className="text-xs tabular-nums text-gray-400">
-                    {intl.formatMessage(messages.releasecount, {
-                      count: visibleReleases.length,
-                    })}
-                  </div>
-                </div>
+                </>
               )}
               {releases.length === 0 ? (
                 <p className="text-sm text-gray-400">
