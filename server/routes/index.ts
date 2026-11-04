@@ -34,6 +34,7 @@ import collectionRoutes from './collection';
 import discoverRoutes, { createTmdbWithRegionLanguage } from './discover';
 import issueRoutes from './issue';
 import issueCommentRoutes from './issueComment';
+import manualSearchRoutes from './manualsearch';
 import mediaRoutes from './media';
 import movieRoutes from './movie';
 import personRoutes from './person';
@@ -179,6 +180,7 @@ router.use('/issue', isAuthenticated(), issueRoutes);
 router.use('/issueComment', isAuthenticated(), issueCommentRoutes);
 router.use('/auth', authRoutes);
 router.use('/overrideRule', isAuthenticated(), overrideRuleRoutes);
+router.use('/manualsearch', manualSearchRoutes);
 
 router.get('/regions', isAuthenticated(), async (req, res, next) => {
   const tmdb = new TheMovieDb();
