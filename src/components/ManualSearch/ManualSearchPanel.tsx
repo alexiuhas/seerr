@@ -21,14 +21,16 @@ import { encodeURIExtraParams } from '@app/hooks/useDiscover';
 import useToasts from '@app/hooks/useToasts';
 import defineMessages from '@app/utils/defineMessages';
 import {
+  AdjustmentsHorizontalIcon,
   ArrowDownIcon,
   ArrowUpIcon,
-  FunnelIcon,
   MagnifyingGlassIcon as SearchFieldIcon,
 } from '@heroicons/react/20/solid';
 import {
+  ArrowPathIcon,
   InformationCircleIcon,
   MagnifyingGlassIcon,
+  XCircleIcon,
 } from '@heroicons/react/24/outline';
 import type {
   ArrName,
@@ -69,6 +71,8 @@ const messages = defineMessages('components.ManualSearch', {
   sortageasc: 'Newest first',
   sortagedesc: 'Oldest first',
   filterreleases: 'Filter releases…',
+  clearfilter: 'Clear filter',
+  resetquery: 'Reset search',
   releasecount: '{count, plural, one {# release} other {# releases}}',
   noresults: 'No releases found. Try another query.',
   nomatches: 'No releases match the filter.',
@@ -106,14 +110,26 @@ const IDLE: CardState = { status: 'idle' };
 
 // Seerr's main search input (Layout/SearchInput), a size smaller.
 const INPUT_CLASS =
-  'block w-full rounded-full border border-gray-600 bg-gray-900/80 py-1.5 pl-9 pr-3 text-sm leading-5 text-white placeholder-gray-300 hover:border-gray-500 focus:border-gray-500 focus:bg-gray-900 focus:placeholder-gray-400 focus:outline-none focus:ring-0';
+  'block w-full rounded-full border border-gray-600 bg-gray-900/80 py-1.5 pl-9 text-sm leading-5 text-white placeholder-gray-300 hover:border-gray-500 focus:border-gray-500 focus:bg-gray-900 focus:placeholder-gray-400 focus:outline-none focus:ring-0';
 
-/** A pill-shaped input with its icon inside on the left. */
+/** An icon button inside the right end of an IconInput. */
+interface InputAction {
+  icon: typeof XCircleIcon;
+  label: string;
+  onClick: () => void;
+}
+
+/**
+ * A pill-shaped input with its icon inside on the left, and optionally an
+ * action button inside on the right.
+ */
 const IconInput = ({
   icon: Icon,
+  action,
   ...props
 }: InputHTMLAttributes<HTMLInputElement> & {
   icon: typeof SearchFieldIcon;
+  action?: InputAction;
 }) => (
   <div className="relative text-white focus-within:text-gray-200">
     <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
@@ -122,9 +138,20 @@ const IconInput = ({
     <input
       type="search"
       autoComplete="off"
-      className={INPUT_CLASS}
+      className={`${INPUT_CLASS} ${action ? 'pr-9' : 'pr-3'}`}
       {...props}
     />
+    {action && (
+      <button
+        type="button"
+        onClick={action.onClick}
+        aria-label={action.label}
+        title={action.label}
+        className="absolute inset-y-0 right-2 m-auto h-6 w-6 rounded-full p-1 text-gray-400 transition hover:text-white"
+      >
+        <action.icon className="h-4 w-4" />
+      </button>
+    )}
   </div>
 );
 
@@ -179,8 +206,12 @@ const ManualSearchPanel = ({
   const { addToast } = useToasts();
   // Kept across searches, so a Release already Pushed can't be Pushed twice.
   const [cards, setCards] = useState<Record<string, CardState>>({});
-  // Searches as you type, after a pause, like Seerr's main search.
-  const [query, debouncedQuery, setQuery] = useDebouncedState(queries.english);
+  // Searches as you type, after a pause, like Seerr's main search. The pause
+  // is longer than its 300ms, since each search hits every indexer.
+  const [query, debouncedQuery, setQuery] = useDebouncedState(
+    queries.english,
+    600
+  );
   const [sort, setSort] = useState<ReleaseSort>(DEFAULT_SORT);
   const [filter, setFilter] = useState('');
   const [releases, setReleases] = useState<Release[] | null>(null);
@@ -420,6 +451,15 @@ const ManualSearchPanel = ({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={intl.formatMessage(messages.searchprowlarr)}
+            action={{
+              icon: ArrowPathIcon,
+              label: intl.formatMessage(messages.resetquery),
+              // back to the prefilled query, searched again
+              onClick: () => {
+                setQuery(queries.english);
+                search(queries.english);
+              },
+            }}
           />
         </form>
 
@@ -522,12 +562,21 @@ const ManualSearchPanel = ({
                       {intl.formatMessage(messages.filterreleases)}
                     </label>
                     <IconInput
-                      icon={FunnelIcon}
+                      icon={AdjustmentsHorizontalIcon}
                       id="manual-search-filter"
                       enterKeyHint="done"
                       value={filter}
                       onChange={(e) => setFilter(e.target.value)}
                       placeholder={intl.formatMessage(messages.filterreleases)}
+                      action={
+                        filter
+                          ? {
+                              icon: XCircleIcon,
+                              label: intl.formatMessage(messages.clearfilter),
+                              onClick: () => setFilter(''),
+                            }
+                          : undefined
+                      }
                     />
                   </div>
                 </>
