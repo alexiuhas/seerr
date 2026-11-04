@@ -12,6 +12,7 @@ import Media from '@server/entity/Media';
 import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { checkUser } from '@server/middleware/auth';
+import { contractViolations } from '@server/test/arrContracts';
 import { setupTestDb } from '@server/test/db';
 import type { Axios, AxiosRequestConfig } from 'axios';
 import axios from 'axios';
@@ -76,6 +77,12 @@ interface OutboundRequest {
 let outbound: OutboundRequest[] = [];
 let httpResponder: (req: OutboundRequest) => unknown = () => [];
 
+// Every faked request and response is checked against the apps' published
+// API contracts; any mismatch fails the test that made it.
+let contractBreaks: string[] = [];
+/** Set by a test whose fake response deliberately predates the contract. */
+let offContractResponse = false;
+
 function fakeHttp() {
   mock.method(
     axios.Axios.prototype,
@@ -94,7 +101,15 @@ function fakeHttp() {
             : config.data,
       };
       outbound.push(req);
-      return { status: 200, data: httpResponder(req) };
+      let data: unknown;
+      try {
+        data = httpResponder(req);
+      } finally {
+        contractBreaks.push(
+          ...contractViolations(req, offContractResponse ? undefined : data)
+        );
+      }
+      return { status: 200, data };
     }
   );
 }
@@ -165,6 +180,8 @@ beforeEach(() => {
   tmdbTvCalls.length = 0;
   outbound = [];
   httpResponder = () => [];
+  contractBreaks = [];
+  offContractResponse = false;
   fakeHttp();
 });
 
@@ -172,6 +189,7 @@ afterEach(() => {
   delete process.env.PROWLARR_URL;
   delete process.env.PROWLARR_API_KEY;
   mock.restoreAll();
+  assert.deepStrictEqual(contractBreaks, [], 'breaks the published API');
 });
 
 async function loginAs(email: string) {
@@ -667,7 +685,7 @@ describe('POST /manualsearch/push', () => {
     });
   });
 
-  it('maps a rejected Release to rejected, with the reasons in either shape', async () => {
+  it('maps a rejected Release to rejected, with the reasons', async () => {
     await linkedMovie();
     httpResponder = () =>
       radarrDecision({
@@ -675,7 +693,7 @@ describe('POST /manualsearch/push', () => {
         rejected: true,
         rejections: [
           'Custom format score -1000 is below the minimum of 0',
-          { reason: 'Language French, English is not wanted' },
+          'Language French, English is not wanted',
         ],
       });
     const res = await push();
@@ -688,18 +706,21 @@ describe('POST /manualsearch/push', () => {
     });
   });
 
-  it('maps a single-release answer from older Radarr versions too', async () => {
+  it('maps answers outside the current API too: a single release, { reason } rejections', async () => {
+    // Neither shape is in Radarr's or Sonarr's v3 contract: older versions
+    // answer with one release, and Sonarr's v5 API sends rejection objects.
+    offContractResponse = true;
     await linkedMovie();
     httpResponder = () =>
       radarrDecision({
         approved: false,
         rejected: true,
-        rejections: ['No'],
+        rejections: ['No', { reason: 'Language French is not wanted' }],
       })[0];
     const res = await push();
     assert.deepStrictEqual(res.body, {
       status: 'rejected',
-      rejections: ['No'],
+      rejections: ['No', 'Language French is not wanted'],
     });
   });
 
