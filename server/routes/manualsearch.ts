@@ -7,6 +7,7 @@ import { ArrUnreachableError } from '@server/api/releasePush';
 import type {
   ManualSearchErrorCode,
   ManualSearchErrorResponse,
+  ManualSearchMediaType,
   ManualSearchOptionsResponse,
   ManualSearchResponse,
   PushOutcome,
@@ -14,12 +15,11 @@ import type {
 } from '@server/interfaces/api/manualSearchInterfaces';
 import {
   ArrNotConfiguredError,
-  getMovieQueries,
-  isMovieInArr,
+  getManualSearchOptions,
   ManualSearchDisabledError,
   NotInArrError,
-  pushMovieRelease,
-  searchMovieReleases,
+  pushRelease,
+  searchReleases,
 } from '@server/lib/manualSearch';
 import { Permission } from '@server/lib/permissions';
 import logger from '@server/logger';
@@ -43,18 +43,17 @@ manualSearchRoutes.get<
   never,
   ManualSearchOptionsResponse,
   never,
-  { tmdbId: string }
+  { mediaType: ManualSearchMediaType; tmdbId: string }
 >('/options', async (req, res, next) => {
   if (!getProwlarrConfig()) {
     return res.status(200).json({ enabled: false });
   }
   try {
-    const tmdbId = Number(req.query.tmdbId);
-    const [queries, inArr] = await Promise.all([
-      getMovieQueries(tmdbId),
-      isMovieInArr(tmdbId),
-    ]);
-    return res.status(200).json({ enabled: true, queries, inArr });
+    const options = await getManualSearchOptions(
+      req.query.mediaType,
+      Number(req.query.tmdbId)
+    );
+    return res.status(200).json(options);
   } catch (e) {
     logger.error('Manual Search could not build the search queries', {
       label: 'Manual Search',
@@ -68,10 +67,10 @@ manualSearchRoutes.get<
   never,
   ManualSearchResponse | ManualSearchErrorResponse,
   never,
-  { query: string }
+  { mediaType: ManualSearchMediaType; query: string }
 >('/', async (req, res, next) => {
   try {
-    const results = await searchMovieReleases(req.query.query);
+    const results = await searchReleases(req.query.mediaType, req.query.query);
     return res.status(200).json({ results });
   } catch (e) {
     if (e instanceof ManualSearchDisabledError) {
@@ -97,7 +96,8 @@ manualSearchRoutes.post<
   PushRequestBody
 >('/push', async (req, res, next) => {
   try {
-    const outcome = await pushMovieRelease(
+    const outcome = await pushRelease(
+      req.body.mediaType,
       Number(req.body.tmdbId),
       req.body.release
     );
@@ -110,7 +110,7 @@ manualSearchRoutes.post<
       return sendError(res, 409, 'ARR_NOT_CONFIGURED', e.message);
     }
     if (e instanceof ArrUnreachableError) {
-      logger.error('Manual Search could not push to Radarr', {
+      logger.error('Manual Search could not push the Release', {
         label: 'Manual Search',
         errorMessage: e.message,
       });

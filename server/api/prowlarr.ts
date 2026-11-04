@@ -56,6 +56,7 @@ export class ProwlarrUnreachableError extends Error {
 
 /** Prowlarr's parent categories; it expands each to its subcategories. */
 export const PROWLARR_MOVIE_CATEGORY = 2000;
+export const PROWLARR_TV_CATEGORY = 5000;
 
 class ProwlarrAPI extends ExternalAPI {
   constructor({ url, apiKey }: ProwlarrConfig) {

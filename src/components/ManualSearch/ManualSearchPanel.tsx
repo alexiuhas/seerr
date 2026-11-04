@@ -15,13 +15,16 @@ import useToasts from '@app/hooks/useToasts';
 import defineMessages from '@app/utils/defineMessages';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import type {
+  ArrName,
   ManualSearchErrorCode,
   ManualSearchErrorResponse,
+  ManualSearchMediaType,
   ManualSearchQueries,
   ManualSearchResponse,
   PushOutcome,
   PushRequestBody,
   Release,
+  SearchScope,
 } from '@server/interfaces/api/manualSearchInterfaces';
 import axios from 'axios';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -49,15 +52,21 @@ const messages = defineMessages('components.ManualSearch', {
     'Prowlarr could not be reached. Check that it is running and that PROWLARR_URL and PROWLARR_API_KEY are correct.',
   disabled: 'Prowlarr is not configured.',
   unknownerror: 'Something went wrong while searching. Please try again.',
-  notinarr: 'Not in Radarr yet. Request it using the Quiet Server, then push.',
-  senttoradarr: 'Sent to Radarr.',
-  queuedinradarr: 'Queued in Radarr (pending).',
-  pushnotinarr: 'The movie is not in Radarr yet.',
+  searchscope: 'Search Scope',
+  wholeseries: 'Whole series',
+  season: 'Season {seasonNumber}',
+  notinarr: 'Not in {arr} yet. Request it using the Quiet Server, then push.',
+  senttoarr: 'Sent to {arr}.',
+  queuedinarr: 'Queued in {arr} (pending).',
+  pushnotinarr: 'The movie is not in {arr} yet.',
+  pushseriesnotinarr: 'The series is not in {arr} yet.',
   pushnoserver:
-    'No Radarr server is configured for this movie. Set a default Radarr server in Settings.',
+    'No {arr} server is configured for this movie. Set a default {arr} server in Settings.',
+  pushseriesnoserver:
+    'No {arr} server is configured for this series. Set a default {arr} server in Settings.',
   pushunreachable:
-    'Radarr could not be reached. Check that it is running, then push again.',
-  pushfailed: 'Something went wrong while pushing to Radarr.',
+    '{arr} could not be reached. Check that it is running, then push again.',
+  pushfailed: 'Something went wrong while pushing to {arr}.',
 });
 
 const IDLE: CardState = { status: 'idle' };
@@ -69,11 +78,13 @@ type SearchError = ManualSearchErrorCode | 'UNKNOWN';
 interface ManualSearchPanelProps {
   show: boolean;
   onClose: () => void;
-  mediaType: 'movie';
+  mediaType: ManualSearchMediaType;
   tmdbId: number;
   title: string;
   queries: ManualSearchQueries;
-  /** Whether the movie is linked to a Radarr movie, so it can be Pushed. */
+  /** TV only: the whole series first, then each regular season. */
+  scopes?: SearchScope[];
+  /** Whether the item is linked to a Radarr movie / Sonarr series. */
   inArr: boolean;
 }
 
@@ -84,13 +95,18 @@ const ManualSearchPanel = ({
   tmdbId,
   title,
   queries,
+  scopes,
   inArr,
 }: ManualSearchPanelProps) => {
   const intl = useIntl();
+  const arr: ArrName = mediaType === 'tv' ? 'Sonarr' : 'Radarr';
+  const isTv = mediaType === 'tv';
   const { addToast } = useToasts();
   // Kept across searches, so a Release already Pushed can't be Pushed twice.
   const [cards, setCards] = useState<Record<string, CardState>>({});
   const [query, setQuery] = useState(queries.english);
+  // 0 is the whole series
+  const [scopeIndex, setScopeIndex] = useState(0);
   const [sort, setSort] = useState<ReleaseSort>('seeders');
   const [filter, setFilter] = useState('');
   const [releases, setReleases] = useState<Release[] | null>(null);
@@ -136,8 +152,10 @@ const ManualSearchPanel = ({
   const pushErrorMessage: Partial<
     Record<ManualSearchErrorCode, typeof messages.pushfailed>
   > = {
-    NOT_IN_ARR: messages.pushnotinarr,
-    ARR_NOT_CONFIGURED: messages.pushnoserver,
+    NOT_IN_ARR: isTv ? messages.pushseriesnotinarr : messages.pushnotinarr,
+    ARR_NOT_CONFIGURED: isTv
+      ? messages.pushseriesnoserver
+      : messages.pushnoserver,
     ARR_UNREACHABLE: messages.pushunreachable,
   };
 
@@ -148,7 +166,7 @@ const ManualSearchPanel = ({
     const key = releaseKey(release);
     setCard(key, { status: 'pushing' });
     try {
-      // The server picks out the fields Radarr needs.
+      // The server picks out the fields Radarr/Sonarr need.
       const body: PushRequestBody = { mediaType, tmdbId, release };
       const { data: outcome } = await axios.post<PushOutcome>(
         '/api/v1/manualsearch/push',
@@ -156,12 +174,12 @@ const ManualSearchPanel = ({
       );
       setCard(key, outcome);
       if (outcome.status === 'approved') {
-        addToast(intl.formatMessage(messages.senttoradarr), {
+        addToast(intl.formatMessage(messages.senttoarr, { arr }), {
           appearance: 'success',
           autoDismiss: true,
         });
       } else if (outcome.status === 'pending') {
-        addToast(intl.formatMessage(messages.queuedinradarr), {
+        addToast(intl.formatMessage(messages.queuedinarr, { arr }), {
           appearance: 'info',
           autoDismiss: true,
         });
@@ -173,7 +191,8 @@ const ManualSearchPanel = ({
         : undefined;
       addToast(
         intl.formatMessage(
-          (code && pushErrorMessage[code]) ?? messages.pushfailed
+          (code && pushErrorMessage[code]) ?? messages.pushfailed,
+          { arr }
         ),
         {
           appearance: 'error',
@@ -235,7 +254,9 @@ const ManualSearchPanel = ({
     >
       <div className="flex flex-col gap-3">
         {!inArr && (
-          <Alert type="info">{intl.formatMessage(messages.notinarr)}</Alert>
+          <Alert type="info">
+            {intl.formatMessage(messages.notinarr, { arr })}
+          </Alert>
         )}
         <form
           className="flex gap-2"
@@ -267,6 +288,38 @@ const ManualSearchPanel = ({
             </span>
           </Button>
         </form>
+
+        {isTv && scopes && scopes.length > 0 && (
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor="manual-search-scope"
+              className="text-xs uppercase tracking-wide text-gray-400"
+            >
+              {intl.formatMessage(messages.searchscope)}
+            </label>
+            <select
+              id="manual-search-scope"
+              value={scopeIndex}
+              onChange={(e) => {
+                const index = Number(e.target.value);
+                setScopeIndex(index);
+                setQuery(scopes[index].query);
+                search(scopes[index].query);
+              }}
+              className="w-auto"
+            >
+              {scopes.map((option, index) => (
+                <option key={option.season ?? 'series'} value={index}>
+                  {option.season == null
+                    ? intl.formatMessage(messages.wholeseries)
+                    : intl.formatMessage(messages.season, {
+                        seasonNumber: option.season,
+                      })}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {titleChips.length > 1 && (
           <div className="flex flex-wrap gap-2">
@@ -361,6 +414,7 @@ const ManualSearchPanel = ({
                       key={key}
                       release={release}
                       state={cards[key] ?? IDLE}
+                      arr={arr}
                       canPush={inArr}
                       onPush={() => push(release)}
                     />

@@ -2,11 +2,14 @@ import assert from 'node:assert/strict';
 import { afterEach, before, beforeEach, describe, it, mock } from 'node:test';
 
 import TheMovieDb from '@server/api/themoviedb';
-import type { TmdbMovieDetails } from '@server/api/themoviedb/interfaces';
+import type {
+  TmdbMovieDetails,
+  TmdbTvDetails,
+} from '@server/api/themoviedb/interfaces';
 import { MediaStatus, MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
-import type { RadarrSettings } from '@server/lib/settings';
+import type { RadarrSettings, SonarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { checkUser } from '@server/middleware/auth';
 import { setupTestDb } from '@server/test/db';
@@ -38,7 +41,30 @@ Object.defineProperty(TheMovieDb.prototype, 'getMovie', {
   configurable: true,
 });
 
-// Prowlarr and Radarr are faked at their HTTP client: every axios request
+let tmdbTv: Partial<TmdbTvDetails> = {};
+const tmdbTvCalls: { tvId: number; language?: string }[] = [];
+
+Object.defineProperty(TheMovieDb.prototype, 'getTvShow', {
+  get() {
+    return async (args: { tvId: number; language?: string }) => {
+      tmdbTvCalls.push(args);
+      return { id: args.tvId, ...tmdbTv } as TmdbTvDetails;
+    };
+  },
+  set() {},
+  configurable: true,
+});
+
+const tmdbSeason = (season_number: number) => ({
+  id: 1000 + season_number,
+  air_date: '2022-02-18',
+  episode_count: 9,
+  name: season_number ? `Season ${season_number}` : 'Specials',
+  overview: '',
+  season_number,
+});
+
+// Prowlarr, Radarr and Sonarr are faked at their HTTP client: every axios request
 // lands here.
 interface OutboundRequest {
   /** Fully serialized URL, query string included. */
@@ -129,6 +155,14 @@ beforeEach(() => {
     release_date: '2023-08-23',
   };
   tmdbCalls.length = 0;
+  tmdbTv = {
+    name: 'Severance',
+    original_name: 'Severance',
+    first_air_date: '2022-02-18',
+    seasons: [tmdbSeason(0), tmdbSeason(1), tmdbSeason(2)],
+    external_ids: { imdb_id: 'tt11280740', tvdb_id: 371980 },
+  };
+  tmdbTvCalls.length = 0;
   outbound = [];
   httpResponder = () => [];
   fakeHttp();
@@ -718,6 +752,352 @@ describe('GET /manualsearch/options, Radarr link', () => {
     const res = await agent
       .get('/manualsearch/options')
       .query({ mediaType: 'movie', tmdbId: 915935 });
+    assert.strictEqual(res.body.inArr, false);
+  });
+});
+
+describe('GET /manualsearch/options, TV', () => {
+  it('offers the whole series and each regular season as Search Scopes, without Season 0', async () => {
+    const agent = await asAdmin();
+    const res = await agent
+      .get('/manualsearch/options')
+      .query({ mediaType: 'tv', tmdbId: 95396 });
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(res.body, {
+      enabled: true,
+      queries: { english: 'Severance' },
+      scopes: [
+        { query: 'Severance' },
+        { season: 1, query: 'Severance S01' },
+        { season: 2, query: 'Severance S02' },
+      ],
+      inArr: false,
+    });
+    assert.deepStrictEqual(tmdbTvCalls, [{ tvId: 95396, language: 'en' }]);
+    assert.strictEqual(tmdbCalls.length, 0);
+  });
+
+  it('zero-pads season numbers to two digits only', async () => {
+    tmdbTv = {
+      ...tmdbTv,
+      name: 'The Simpsons',
+      seasons: [tmdbSeason(9), tmdbSeason(10), tmdbSeason(36)],
+    };
+    const agent = await asAdmin();
+    const res = await agent
+      .get('/manualsearch/options')
+      .query({ mediaType: 'tv', tmdbId: 456 });
+    assert.deepStrictEqual(
+      res.body.scopes.map((scope: { query: string }) => scope.query),
+      [
+        'The Simpsons',
+        'The Simpsons S09',
+        'The Simpsons S10',
+        'The Simpsons S36',
+      ]
+    );
+  });
+
+  it('leaves out announced seasons that have no episodes yet', async () => {
+    tmdbTv = {
+      ...tmdbTv,
+      seasons: [tmdbSeason(1), { ...tmdbSeason(2), episode_count: 0 }],
+    };
+    const agent = await asAdmin();
+    const res = await agent
+      .get('/manualsearch/options')
+      .query({ mediaType: 'tv', tmdbId: 95396 });
+    assert.deepStrictEqual(res.body.scopes, [
+      { query: 'Severance' },
+      { season: 1, query: 'Severance S01' },
+    ]);
+  });
+
+  it('reports disabled for TV when Prowlarr env vars are unset', async () => {
+    delete process.env.PROWLARR_URL;
+    const agent = await asAdmin();
+    const res = await agent
+      .get('/manualsearch/options')
+      .query({ mediaType: 'tv', tmdbId: 95396 });
+    assert.deepStrictEqual(res.body, { enabled: false });
+  });
+});
+
+describe('GET /manualsearch, TV', () => {
+  it('searches Prowlarr TV categories for the query', async () => {
+    const agent = await asAdmin();
+    const res = await agent
+      .get('/manualsearch')
+      .query({ mediaType: 'tv', tmdbId: 95396, query: 'Severance S02' });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(outbound.length, 1);
+    const url = new URL(outbound[0].uri);
+    assert.strictEqual(url.searchParams.get('query'), 'Severance S02');
+    assert.strictEqual(url.searchParams.get('type'), 'search');
+    assert.deepStrictEqual(url.searchParams.getAll('categories'), ['5000']);
+  });
+});
+
+function configureSonarr(servers: Partial<SonarrSettings>[]) {
+  getSettings().sonarr = servers.map((server, i) => ({
+    id: i,
+    name: `Sonarr ${i}`,
+    hostname: `sonarr${i}`,
+    port: 8989,
+    apiKey: `sonarr-key-${i}`,
+    baseUrl: '',
+    useSsl: false,
+    activeProfileId: 1,
+    activeProfileName: 'HD-1080p',
+    activeDirectory: '/tv',
+    is4k: false,
+    tags: [],
+    isDefault: i === 0,
+    syncEnabled: true,
+    preventSearch: false,
+    externalUrl: '',
+    seriesType: 'standard',
+    animeSeriesType: 'anime',
+    enableSeasonFolders: true,
+    monitorNewItems: 'all',
+    ...server,
+  })) as SonarrSettings[];
+}
+
+/** A series Seerr has linked to a Sonarr series, as a sent request leaves it. */
+async function linkedSeries(overrides: Partial<Media> = {}) {
+  const repository = getRepository(Media);
+  return repository.save(
+    repository.create({
+      mediaType: MediaType.TV,
+      tmdbId: 95396,
+      tvdbId: 371980,
+      imdbId: 'tt11280740',
+      status: MediaStatus.PROCESSING,
+      serviceId: 0,
+      externalServiceId: 17,
+      ...overrides,
+    })
+  );
+}
+
+const pushedEpisodeRelease = () =>
+  pushedRelease({
+    guid: 'https://1337x.to/torrent/2',
+    title: 'Severance.S02.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb',
+    size: 31_000_000_000,
+    downloadUrl: 'http://prowlarr:9696/3/download?link=sev',
+    infoUrl: 'https://1337x.to/torrent/2/info',
+  });
+
+describe('POST /manualsearch/push, TV', () => {
+  beforeEach(() => {
+    configureSonarr([{}, { name: 'Sonarr Quiet', isDefault: false }]);
+    httpResponder = () => radarrDecision();
+  });
+
+  afterEach(() => {
+    getSettings().sonarr = [];
+  });
+
+  const push = async (release = pushedEpisodeRelease()) => {
+    const agent = await asAdmin();
+    return agent
+      .post('/manualsearch/push')
+      .send({ mediaType: 'tv', tmdbId: 95396, release });
+  };
+
+  it('pushes to the Sonarr server the series was requested on', async () => {
+    await linkedSeries({ serviceId: 1 });
+    const res = await push();
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(pushes().length, 1);
+    assert.strictEqual(pushes()[0].method, 'post');
+    assert.ok(pushes()[0].uri.startsWith('http://sonarr1:8989/api/v3/'));
+    assert.strictEqual(pushes()[0].headers['X-Api-Key'], 'sonarr-key-1');
+  });
+
+  it('sends the Release with the series tvdbId/imdbId and no tmdbId', async () => {
+    await linkedSeries();
+    await push();
+    assert.deepStrictEqual(pushes()[0].body, {
+      title: 'Severance.S02.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb',
+      protocol: 'torrent',
+      publishDate: '2023-09-20T10:00:00Z',
+      downloadUrl: 'http://prowlarr:9696/3/download?link=sev',
+      guid: 'https://1337x.to/torrent/2',
+      size: 31_000_000_000,
+      indexer: '1337x',
+      infoUrl: 'https://1337x.to/torrent/2/info',
+      seeders: 214,
+      leechers: 12,
+      tvdbId: 371980,
+      imdbId: 'tt11280740',
+    });
+  });
+
+  it("looks up the TVDB and IMDb IDs from TMDB when Seerr hasn't stored them", async () => {
+    await linkedSeries({ tvdbId: undefined, imdbId: undefined });
+    await push();
+    const body = pushes()[0].body as Record<string, unknown>;
+    assert.strictEqual(body.tvdbId, 371980);
+    assert.strictEqual(body.imdbId, 'tt11280740');
+  });
+
+  it('falls back to the default non-4K Sonarr when the requested server is gone', async () => {
+    configureSonarr([
+      { name: 'Sonarr 4K', is4k: true, isDefault: true },
+      { name: 'Sonarr', isDefault: true },
+    ]);
+    await linkedSeries({ serviceId: 7 });
+    const res = await push();
+    assert.strictEqual(res.status, 200);
+    assert.ok(pushes()[0].uri.startsWith('http://sonarr1:8989/'));
+  });
+
+  it('never pushes a series to Radarr', async () => {
+    configureRadarr([{}]);
+    try {
+      await linkedSeries();
+      await push();
+      assert.strictEqual(pushes().length, 1);
+      assert.ok(pushes()[0].uri.startsWith('http://sonarr0:8989/'));
+    } finally {
+      getSettings().radarr = [];
+    }
+  });
+
+  it('reports no Sonarr configured when no server matches and none is default', async () => {
+    configureSonarr([{ isDefault: false }]);
+    await linkedSeries({ serviceId: 5 });
+    const res = await push();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'ARR_NOT_CONFIGURED');
+    assert.strictEqual(pushes().length, 0);
+  });
+
+  it('answers 409 without pushing when the series is not in Sonarr', async () => {
+    await linkedSeries({ externalServiceId: null });
+    const res = await push();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
+    assert.strictEqual(pushes().length, 0);
+  });
+
+  it('does not treat a movie with the same TMDB ID as the series', async () => {
+    await linkedMovie({ tmdbId: 95396 });
+    const res = await push();
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual(res.body.code, 'NOT_IN_ARR');
+  });
+
+  it('reports Sonarr unreachable when the connection fails', async () => {
+    await linkedSeries();
+    httpResponder = () => {
+      throw networkError();
+    };
+    const res = await push();
+    assert.strictEqual(res.status, 502);
+    assert.strictEqual(res.body.code, 'ARR_UNREACHABLE');
+  });
+
+  it('maps an approved Release to approved', async () => {
+    await linkedSeries();
+    const res = await push();
+    assert.deepStrictEqual(res.body, { status: 'approved' });
+  });
+
+  it('maps a temporarily rejected Release to pending, with the reasons', async () => {
+    await linkedSeries();
+    httpResponder = () =>
+      radarrDecision({
+        approved: false,
+        temporarilyRejected: true,
+        rejections: ['Delay profile: release held for 60 minutes'],
+      });
+    const res = await push();
+    assert.deepStrictEqual(res.body, {
+      status: 'pending',
+      rejections: ['Delay profile: release held for 60 minutes'],
+    });
+  });
+
+  it('maps a rejected Release to rejected, with the reasons', async () => {
+    await linkedSeries();
+    httpResponder = () =>
+      radarrDecision({
+        approved: false,
+        rejected: true,
+        rejections: [
+          { reason: 'Existing file on disk is of equal or higher preference' },
+        ],
+      });
+    const res = await push();
+    assert.deepStrictEqual(res.body, {
+      status: 'rejected',
+      rejections: ['Existing file on disk is of equal or higher preference'],
+    });
+  });
+
+  it('maps an unparseable title (400) to rejected, with the reason', async () => {
+    await linkedSeries();
+    httpResponder = () => {
+      throw httpError(400, [
+        { propertyName: 'Title', errorMessage: 'Unable to parse' },
+      ]);
+    };
+    const res = await push();
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(res.body, {
+      status: 'rejected',
+      rejections: ['Unable to parse'],
+    });
+  });
+});
+
+describe('Manual Search access, TV', () => {
+  it('refuses non-admins on TV options', async () => {
+    const agent = await asUser();
+    const res = await agent
+      .get('/manualsearch/options')
+      .query({ mediaType: 'tv', tmdbId: 95396 });
+    assert.strictEqual(res.status, 403);
+  });
+
+  it('refuses non-admins a TV push', async () => {
+    configureSonarr([{}]);
+    try {
+      await linkedSeries();
+      const agent = await asUser();
+      const res = await agent.post('/manualsearch/push').send({
+        mediaType: 'tv',
+        tmdbId: 95396,
+        release: pushedEpisodeRelease(),
+      });
+      assert.strictEqual(res.status, 403);
+      assert.strictEqual(pushes().length, 0);
+    } finally {
+      getSettings().sonarr = [];
+    }
+  });
+});
+
+describe('GET /manualsearch/options, Sonarr link', () => {
+  it('reports inArr:true for a series linked to Sonarr', async () => {
+    await linkedSeries();
+    const agent = await asAdmin();
+    const res = await agent
+      .get('/manualsearch/options')
+      .query({ mediaType: 'tv', tmdbId: 95396 });
+    assert.strictEqual(res.body.inArr, true);
+  });
+
+  it('reports inArr:false for a series without a Sonarr link', async () => {
+    await linkedSeries({ externalServiceId: null });
+    const agent = await asAdmin();
+    const res = await agent
+      .get('/manualsearch/options')
+      .query({ mediaType: 'tv', tmdbId: 95396 });
     assert.strictEqual(res.body.inArr, false);
   });
 });

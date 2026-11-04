@@ -29,7 +29,7 @@ export const sortAndFilterReleases = (
   return [...matching].sort(comparators[sort]);
 };
 
-/** Where a Release card stands in its Push to Radarr. */
+/** Where a Release card stands in its Push to Radarr/Sonarr. */
 export type CardState =
   | { status: 'idle' }
   | { status: 'pushing' }
