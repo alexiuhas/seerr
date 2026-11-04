@@ -27,6 +27,12 @@ export interface ManualSearchOptionsResponse {
    * be Pushed.
    */
   inArr?: boolean;
+  /**
+   * Whether a rejected Push can fall back to a Prowlarr Grab: the item is in
+   * Radarr/Sonarr and Prowlarr has the download client named for its media
+   * type.
+   */
+  prowlarrGrabAvailable?: boolean;
 }
 
 /** A single torrent offered by an indexer, as returned by a Manual Search. */
@@ -63,6 +69,19 @@ export type PushableRelease = Pick<
   | 'leechers'
 >;
 
+/** The fields of a Release that a Prowlarr Grab needs. */
+export type GrabbableRelease = Pick<Release, 'guid' | 'indexerId'>;
+
+export interface GrabRequestBody {
+  mediaType: ManualSearchMediaType;
+  tmdbId: number;
+  release: GrabbableRelease;
+}
+
+export interface GrabOutcome {
+  status: 'grabbed';
+}
+
 export interface PushRequestBody {
   mediaType: ManualSearchMediaType;
   tmdbId: number;
@@ -81,7 +100,10 @@ export type ManualSearchErrorCode =
   | 'PROWLARR_UNREACHABLE'
   | 'NOT_IN_ARR'
   | 'ARR_NOT_CONFIGURED'
-  | 'ARR_UNREACHABLE';
+  | 'ARR_UNREACHABLE'
+  | 'GRAB_UNAVAILABLE'
+  | 'GRAB_FAILED'
+  | 'SEARCH_EXPIRED';
 
 export interface ManualSearchErrorResponse {
   code: ManualSearchErrorCode;

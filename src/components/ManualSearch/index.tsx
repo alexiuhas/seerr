@@ -75,6 +75,7 @@ const ManualSearchButton = ({
         queries={options.queries}
         scopes={options.scopes}
         inArr={!!options.inArr}
+        prowlarrGrabAvailable={!!options.prowlarrGrabAvailable}
       />
     </>
   );

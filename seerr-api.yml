@@ -8363,6 +8363,10 @@ paths:
                     type: boolean
                     description: Whether the item is linked to a Radarr movie or Sonarr series, so a Release can be Pushed
                     example: true
+                  prowlarrGrabAvailable:
+                    type: boolean
+                    description: Whether a rejected Push can fall back to a Prowlarr Grab. True only for items in Radarr/Sonarr when Prowlarr has the download client named by PROWLARR_MOVIE_CLIENT or PROWLARR_TV_CLIENT
+                    example: true
         '403':
           description: Requires the ADMIN permission
   /manualsearch:
@@ -8546,6 +8550,96 @@ paths:
                   code:
                     type: string
                     enum: [ARR_UNREACHABLE]
+                  message:
+                    type: string
+  /manualsearch/grab:
+    post:
+      summary: Grab a Release through Prowlarr
+      description: The fallback for a rejected Push. Prowlarr sends a Release from a recent search straight to its download client for the media type, chosen by exact name from PROWLARR_MOVIE_CLIENT or PROWLARR_TV_CLIENT. Only for items in Radarr/Sonarr. Requires the `ADMIN` permission.
+      tags:
+        - other
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mediaType, tmdbId, release]
+              properties:
+                mediaType:
+                  type: string
+                  enum: [movie, tv]
+                tmdbId:
+                  type: number
+                  example: 915935
+                release:
+                  type: object
+                  required: [guid, indexerId]
+                  properties:
+                    guid:
+                      type: string
+                    indexerId:
+                      type: number
+      responses:
+        '200':
+          description: Prowlarr sent the Release to the download client
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [grabbed]
+        '403':
+          description: Requires the ADMIN permission
+        '409':
+          description: The item is not in Radarr/Sonarr, or no Prowlarr download client is set up for its media type
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    enum: [NOT_IN_ARR, GRAB_UNAVAILABLE]
+                  message:
+                    type: string
+        '410':
+          description: The Release dropped out of Prowlarr's search cache; search again
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    enum: [SEARCH_EXPIRED]
+                  message:
+                    type: string
+        '502':
+          description: Prowlarr is unreachable, or refused the grab
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    enum: [GRAB_FAILED, PROWLARR_UNREACHABLE]
+                  message:
+                    type: string
+        '503':
+          description: Prowlarr is not configured
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    enum: [DISABLED]
                   message:
                     type: string
   # --- end ManualSearch -----------------------------------------------------

@@ -1,10 +1,14 @@
 import {
   getProwlarrConfig,
+  GrabFailedError,
   IndexersUnavailableError,
   ProwlarrUnreachableError,
+  SearchExpiredError,
 } from '@server/api/prowlarr';
 import { ArrUnreachableError } from '@server/api/releasePush';
 import type {
+  GrabOutcome,
+  GrabRequestBody,
   ManualSearchErrorCode,
   ManualSearchErrorResponse,
   ManualSearchMediaType,
@@ -16,6 +20,8 @@ import type {
 import {
   ArrNotConfiguredError,
   getManualSearchOptions,
+  grabRelease,
+  GrabUnavailableError,
   ManualSearchDisabledError,
   NotInArrError,
   pushRelease,
@@ -115,6 +121,47 @@ manualSearchRoutes.post<
         errorMessage: e.message,
       });
       return sendError(res, 502, 'ARR_UNREACHABLE', e.message);
+    }
+    return next({ status: 500, message: e.message });
+  }
+});
+
+manualSearchRoutes.post<
+  never,
+  GrabOutcome | ManualSearchErrorResponse,
+  GrabRequestBody
+>('/grab', async (req, res, next) => {
+  try {
+    const outcome = await grabRelease(
+      req.body.mediaType,
+      Number(req.body.tmdbId),
+      req.body.release
+    );
+    return res.status(200).json(outcome);
+  } catch (e) {
+    if (e instanceof ManualSearchDisabledError) {
+      return sendError(res, 503, 'DISABLED', e.message);
+    }
+    if (e instanceof NotInArrError) {
+      return sendError(res, 409, 'NOT_IN_ARR', e.message);
+    }
+    if (e instanceof GrabUnavailableError) {
+      return sendError(res, 409, 'GRAB_UNAVAILABLE', e.message);
+    }
+    if (e instanceof SearchExpiredError) {
+      return sendError(res, 410, 'SEARCH_EXPIRED', e.message);
+    }
+    if (e instanceof GrabFailedError || e instanceof ProwlarrUnreachableError) {
+      logger.error('Manual Search could not grab the Release', {
+        label: 'Manual Search',
+        errorMessage: e.message,
+      });
+      return sendError(
+        res,
+        502,
+        e instanceof GrabFailedError ? 'GRAB_FAILED' : 'PROWLARR_UNREACHABLE',
+        e.message
+      );
     }
     return next({ status: 500, message: e.message });
   }

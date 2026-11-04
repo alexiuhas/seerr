@@ -54,6 +54,27 @@ export class ProwlarrUnreachableError extends Error {
   }
 }
 
+/** Prowlarr no longer has the Release in its search cache (~30 minutes). */
+export class SearchExpiredError extends Error {
+  constructor() {
+    super('The search results expired; search again');
+    this.name = 'SearchExpiredError';
+  }
+}
+
+/** Prowlarr refused the grab, e.g. the indexer or download client failed. */
+export class GrabFailedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'GrabFailedError';
+  }
+}
+
+export interface ProwlarrDownloadClient {
+  id: number;
+  name: string;
+}
+
 /** Prowlarr's parent categories; it expands each to its subcategories. */
 export const PROWLARR_MOVIE_CATEGORY = 2000;
 export const PROWLARR_TV_CATEGORY = 5000;
@@ -85,6 +106,50 @@ class ProwlarrAPI extends ExternalAPI {
       }
       throw new ProwlarrUnreachableError(
         `[Prowlarr] Search failed: ${e.message}`,
+        { cause: e }
+      );
+    }
+  }
+
+  /** The id of the download client with exactly this name, if any. */
+  public async findDownloadClientId(name: string): Promise<number | undefined> {
+    try {
+      const response = await this.axios.get<ProwlarrDownloadClient[]>(
+        '/api/v1/downloadclient'
+      );
+      return response.data.find((client) => client.name === name)?.id;
+    } catch (e) {
+      throw new ProwlarrUnreachableError(
+        `[Prowlarr] Listing download clients failed: ${e.message}`,
+        { cause: e }
+      );
+    }
+  }
+
+  /**
+   * Sends a Release from a recent search straight to a download client. Posts
+   * through axios directly, so a grab is never answered from a cache.
+   */
+  public async grab(release: {
+    guid: string;
+    indexerId: number;
+    downloadClientId: number;
+  }): Promise<void> {
+    try {
+      await this.axios.post('/api/v1/search', release);
+    } catch (e) {
+      if (axios.isAxiosError(e) && e.response) {
+        // 404: the Release dropped out of Prowlarr's search cache.
+        if (e.response.status === 404) {
+          throw new SearchExpiredError();
+        }
+        throw new GrabFailedError(
+          `[Prowlarr] Grab failed: ${e.response.data?.message ?? e.message}`,
+          { cause: e }
+        );
+      }
+      throw new ProwlarrUnreachableError(
+        `[Prowlarr] Grab failed: ${e.message}`,
         { cause: e }
       );
     }

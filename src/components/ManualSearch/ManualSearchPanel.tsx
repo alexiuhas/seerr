@@ -16,6 +16,8 @@ import defineMessages from '@app/utils/defineMessages';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import type {
   ArrName,
+  GrabOutcome,
+  GrabRequestBody,
   ManualSearchErrorCode,
   ManualSearchErrorResponse,
   ManualSearchMediaType,
@@ -67,6 +69,15 @@ const messages = defineMessages('components.ManualSearch', {
   pushunreachable:
     '{arr} could not be reached. Check that it is running, then push again.',
   pushfailed: 'Something went wrong while pushing to {arr}.',
+  sentviaprowlarr: 'Sent via Prowlarr.',
+  searchexpired:
+    "Prowlarr's search results have expired, so the Release can no longer be grabbed. Search again, then grab it.",
+  searchagain: 'Search Again',
+  grabunavailable:
+    'No Prowlarr download client is set up for this. Check PROWLARR_MOVIE_CLIENT / PROWLARR_TV_CLIENT.',
+  grabfailed: 'Prowlarr could not grab the Release.',
+  grabunreachable:
+    'Prowlarr could not be reached. Check that it is running, then grab again.',
 });
 
 const IDLE: CardState = { status: 'idle' };
@@ -86,6 +97,8 @@ interface ManualSearchPanelProps {
   scopes?: SearchScope[];
   /** Whether the item is linked to a Radarr movie / Sonarr series. */
   inArr: boolean;
+  /** Whether a rejected Push can fall back to a Prowlarr Grab. */
+  prowlarrGrabAvailable: boolean;
 }
 
 const ManualSearchPanel = ({
@@ -97,6 +110,7 @@ const ManualSearchPanel = ({
   queries,
   scopes,
   inArr,
+  prowlarrGrabAvailable,
 }: ManualSearchPanelProps) => {
   const intl = useIntl();
   const arr: ArrName = mediaType === 'tv' ? 'Sonarr' : 'Radarr';
@@ -112,6 +126,8 @@ const ManualSearchPanel = ({
   const [releases, setReleases] = useState<Release[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<SearchError | null>(null);
+  // A grab found Prowlarr's search cache expired: the results need refreshing.
+  const [searchExpired, setSearchExpired] = useState(false);
   // ignores responses from searches that a newer one has superseded
   const latestSearch = useRef(0);
 
@@ -123,6 +139,7 @@ const ManualSearchPanel = ({
     const searchId = ++latestSearch.current;
     setLoading(true);
     setError(null);
+    setSearchExpired(false);
     try {
       // Encoded by hand: axios turns spaces into '+', which the OpenAPI
       // validator rejects as a reserved character.
@@ -202,6 +219,51 @@ const ManualSearchPanel = ({
     }
   };
 
+  const grabErrorMessage: Partial<
+    Record<ManualSearchErrorCode, typeof messages.grabfailed>
+  > = {
+    NOT_IN_ARR: isTv ? messages.pushseriesnotinarr : messages.pushnotinarr,
+    GRAB_UNAVAILABLE: messages.grabunavailable,
+    PROWLARR_UNREACHABLE: messages.grabunreachable,
+  };
+
+  const grab = async (release: Release, rejections: string[]) => {
+    const key = releaseKey(release);
+    setCard(key, { status: 'prowlarrGrabbing', rejections });
+    try {
+      const body: GrabRequestBody = {
+        mediaType,
+        tmdbId,
+        release: { guid: release.guid, indexerId: release.indexerId },
+      };
+      await axios.post<GrabOutcome>('/api/v1/manualsearch/grab', body);
+      setCard(key, { status: 'prowlarrGrabbed' });
+      addToast(intl.formatMessage(messages.sentviaprowlarr), {
+        appearance: 'success',
+        autoDismiss: true,
+      });
+    } catch (e) {
+      setCard(key, { status: 'rejected', rejections });
+      const code = axios.isAxiosError<ManualSearchErrorResponse>(e)
+        ? e.response?.data?.code
+        : undefined;
+      if (code === 'SEARCH_EXPIRED') {
+        setSearchExpired(true);
+        return;
+      }
+      addToast(
+        intl.formatMessage(
+          (code && grabErrorMessage[code]) ?? messages.grabfailed,
+          { arr }
+        ),
+        {
+          appearance: 'error',
+          autoDismiss: true,
+        }
+      );
+    }
+  };
+
   // Search with the prefilled query the first time the panel opens.
   useEffect(() => {
     if (show && releases === null && !loading && !error) {
@@ -256,6 +318,22 @@ const ManualSearchPanel = ({
         {!inArr && (
           <Alert type="info">
             {intl.formatMessage(messages.notinarr, { arr })}
+          </Alert>
+        )}
+        {searchExpired && (
+          <Alert type="warning">
+            <div className="flex flex-col items-start gap-2">
+              <span>{intl.formatMessage(messages.searchexpired)}</span>
+              <Button
+                buttonType="warning"
+                buttonSize="sm"
+                disabled={loading}
+                onClick={() => search(query)}
+              >
+                <MagnifyingGlassIcon />
+                <span>{intl.formatMessage(messages.searchagain)}</span>
+              </Button>
+            </div>
           </Alert>
         )}
         <form
@@ -409,14 +487,22 @@ const ManualSearchPanel = ({
               ) : (
                 visibleReleases.map((release) => {
                   const key = releaseKey(release);
+                  const state = cards[key] ?? IDLE;
                   return (
                     <ReleaseCard
                       key={key}
                       release={release}
-                      state={cards[key] ?? IDLE}
+                      state={state}
                       arr={arr}
                       canPush={inArr}
                       onPush={() => push(release)}
+                      canGrab={inArr && prowlarrGrabAvailable}
+                      onGrab={() =>
+                        grab(
+                          release,
+                          'rejections' in state ? state.rejections : []
+                        )
+                      }
                     />
                   );
                 })
