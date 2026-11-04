@@ -1,5 +1,6 @@
 import Tooltip from '@app/components/Common/Tooltip';
 import type { CardState } from '@app/components/ManualSearch/releases';
+import { useHoverTooltip } from '@app/components/ManualSearch/useHoverTooltip';
 import defineMessages from '@app/utils/defineMessages';
 import { formatBytes } from '@app/utils/numberHelpers';
 import { ArrowDownTrayIcon } from '@heroicons/react/24/outline';
@@ -71,6 +72,7 @@ const ReleaseCard = ({
   onGrab,
 }: ReleaseCardProps) => {
   const intl = useIntl();
+  const tooltipConfig = useHoverTooltip();
 
   const age =
     release.ageDays < 60
@@ -144,7 +146,7 @@ const ReleaseCard = ({
             <Spinner />
           </span>
         ) : state.status === 'idle' ? (
-          <Tooltip content={pushLabel}>
+          <Tooltip content={pushLabel} tooltipConfig={tooltipConfig}>
             <button
               type="button"
               onClick={onPush}
