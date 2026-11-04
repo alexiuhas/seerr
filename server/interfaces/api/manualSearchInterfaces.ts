@@ -3,10 +3,29 @@ export interface ManualSearchQueries {
   original?: string;
 }
 
+export type ManualSearchMediaType = 'movie' | 'tv';
+
+/** Where a Push goes: Radarr for movies, Sonarr for series. */
+export type ArrName = 'Radarr' | 'Sonarr';
+
+/**
+ * What a Manual Search on a series targets: the whole series (no season) or
+ * a single regular season.
+ */
+export interface SearchScope {
+  season?: number;
+  query: string;
+}
+
 export interface ManualSearchOptionsResponse {
   enabled: boolean;
   queries?: ManualSearchQueries;
-  /** Whether the movie is linked to a Radarr movie, so it can be Pushed. */
+  /** TV only: the whole series first, then each regular season. */
+  scopes?: SearchScope[];
+  /**
+   * Whether the item is linked to a Radarr movie or Sonarr series, so it can
+   * be Pushed.
+   */
   inArr?: boolean;
 }
 
@@ -30,7 +49,7 @@ export interface ManualSearchResponse {
   results: Release[];
 }
 
-/** The fields of a Release that a Push sends on to Radarr. */
+/** The fields of a Release that a Push sends on to Radarr/Sonarr. */
 export type PushableRelease = Pick<
   Release,
   | 'guid'
@@ -45,12 +64,12 @@ export type PushableRelease = Pick<
 >;
 
 export interface PushRequestBody {
-  mediaType: 'movie';
+  mediaType: ManualSearchMediaType;
   tmdbId: number;
   release: PushableRelease;
 }
 
-/** Radarr's verdict on a Pushed Release. */
+/** Radarr's or Sonarr's verdict on a Pushed Release. */
 export type PushOutcome =
   | { status: 'approved' }
   | { status: 'pending'; rejections: string[] }

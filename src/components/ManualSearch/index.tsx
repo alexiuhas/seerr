@@ -4,7 +4,10 @@ import ManualSearchPanel from '@app/components/ManualSearch/ManualSearchPanel';
 import { Permission, useUser } from '@app/hooks/useUser';
 import defineMessages from '@app/utils/defineMessages';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
-import type { ManualSearchOptionsResponse } from '@server/interfaces/api/manualSearchInterfaces';
+import type {
+  ManualSearchMediaType,
+  ManualSearchOptionsResponse,
+} from '@server/interfaces/api/manualSearchInterfaces';
 import { useState } from 'react';
 import { useIntl } from 'react-intl';
 import useSWR from 'swr';
@@ -14,7 +17,7 @@ const messages = defineMessages('components.ManualSearch', {
 });
 
 interface ManualSearchButtonProps {
-  mediaType: 'movie';
+  mediaType: ManualSearchMediaType;
   tmdbId: number;
   title: string;
 }
@@ -51,7 +54,8 @@ const ManualSearchButton = ({
           buttonType="ghost"
           onClick={() => {
             setShow(true);
-            // a request made since the page loaded may have linked it to Radarr
+            // a request made since the page loaded may have linked it to
+            // Radarr/Sonarr
             mutate();
           }}
           className="ml-2 first:ml-0"
@@ -60,7 +64,7 @@ const ManualSearchButton = ({
           <MagnifyingGlassIcon className="!mr-0" />
         </Button>
       </Tooltip>
-      {/* keyed so moving to another movie starts a fresh search */}
+      {/* keyed so moving to another title starts a fresh search */}
       <ManualSearchPanel
         key={tmdbId}
         show={show}
@@ -69,6 +73,7 @@ const ManualSearchButton = ({
         tmdbId={tmdbId}
         title={title}
         queries={options.queries}
+        scopes={options.scopes}
         inArr={!!options.inArr}
       />
     </>

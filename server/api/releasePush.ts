@@ -1,8 +1,11 @@
 import ExternalAPI from '@server/api/externalapi';
-import type { PushOutcome } from '@server/interfaces/api/manualSearchInterfaces';
+import type {
+  ArrName,
+  PushOutcome,
+} from '@server/interfaces/api/manualSearchInterfaces';
 import axios from 'axios';
 
-/** What Radarr's `/api/v3/release/push` takes for a torrent Release. */
+/** What Radarr's/Sonarr's `/api/v3/release/push` takes for a torrent Release. */
 export interface ReleasePushBody {
   title: string;
   protocol: 'torrent';
@@ -14,7 +17,10 @@ export interface ReleasePushBody {
   infoUrl?: string;
   seeders?: number;
   leechers?: number;
+  /** Radarr only */
   tmdbId?: number;
+  /** Sonarr only */
+  tvdbId?: number;
   imdbId?: string;
 }
 
@@ -29,7 +35,7 @@ interface ValidationFailure {
   errorMessage?: string;
 }
 
-/** Radarr couldn't be reached, or failed in an unexpected way. */
+/** Radarr/Sonarr couldn't be reached, or failed in an unexpected way. */
 export class ArrUnreachableError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
@@ -45,13 +51,26 @@ const reasons = (rejections: ReleaseResource['rejections'] = []) =>
     .filter((reason): reason is string => !!reason);
 
 /**
- * Pushes Releases to a Radarr instance. It has no cache store, unlike
- * RadarrAPI, and posts through axios directly: a push must always reach
- * Radarr, never be answered from a cached response.
+ * Pushes Releases to a Radarr or Sonarr instance, which share the endpoint.
+ * It has no cache store, unlike RadarrAPI/SonarrAPI, and posts through axios
+ * directly: a push must always reach the instance, never be answered from a
+ * cached response.
  */
 class ReleasePushAPI extends ExternalAPI {
-  constructor({ url, apiKey }: { url: string; apiKey: string }) {
+  private name: ArrName;
+
+  constructor({
+    url,
+    apiKey,
+    name,
+  }: {
+    url: string;
+    apiKey: string;
+    /** For error messages. */
+    name: ArrName;
+  }) {
     super(url, {}, { headers: { 'X-Api-Key': apiKey } });
+    this.name = name;
   }
 
   public async push(body: ReleasePushBody): Promise<PushOutcome> {
@@ -62,7 +81,7 @@ class ReleasePushAPI extends ExternalAPI {
       >('/release/push', body);
       data = response.data;
     } catch (e) {
-      // 400 is Radarr refusing the Release itself, e.g. "Unable to parse".
+      // 400 is the instance refusing the Release itself, e.g. "Unable to parse".
       if (axios.isAxiosError(e) && e.response?.status === 400) {
         const failures: ValidationFailure[] = Array.isArray(e.response.data)
           ? e.response.data
@@ -75,15 +94,18 @@ class ReleasePushAPI extends ExternalAPI {
           rejections: messages.length ? messages : ['Unable to parse'],
         };
       }
-      throw new ArrUnreachableError(`[Radarr] Push failed: ${e.message}`, {
-        cause: e,
-      });
+      throw new ArrUnreachableError(
+        `[${this.name}] Push failed: ${e.message}`,
+        {
+          cause: e,
+        }
+      );
     }
 
-    // Radarr v4+ answers with a list; older versions with the release itself.
+    // Newer versions answer with a list; older ones with the release itself.
     const decision = Array.isArray(data) ? data[0] : data;
     if (!decision) {
-      throw new ArrUnreachableError('[Radarr] Push returned no decision');
+      throw new ArrUnreachableError(`[${this.name}] Push returned no decision`);
     }
     if (decision.approved) {
       return { status: 'approved' };

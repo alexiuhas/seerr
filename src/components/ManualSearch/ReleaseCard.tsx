@@ -3,7 +3,10 @@ import type { CardState } from '@app/components/ManualSearch/releases';
 import defineMessages from '@app/utils/defineMessages';
 import { formatBytes } from '@app/utils/numberHelpers';
 import { ArrowDownTrayIcon } from '@heroicons/react/24/outline';
-import type { Release } from '@server/interfaces/api/manualSearchInterfaces';
+import type {
+  ArrName,
+  Release,
+} from '@server/interfaces/api/manualSearchInterfaces';
 import { useIntl } from 'react-intl';
 
 const messages = defineMessages('components.ManualSearch.ReleaseCard', {
@@ -12,19 +15,21 @@ const messages = defineMessages('components.ManualSearch.ReleaseCard', {
   ageYears: '{years}y',
   seedersLeechers: 'Seeders / leechers',
   age: 'Age',
-  push: 'Push to Radarr',
-  pushing: 'Pushing to Radarr…',
-  grabbed: 'Grabbed by Radarr',
-  pending: 'Pending in Radarr',
+  push: 'Push to {arr}',
+  pushing: 'Pushing to {arr}…',
+  grabbed: 'Grabbed by {arr}',
+  pending: 'Pending in {arr}',
   rejected: 'Rejected',
-  radarrsaid: 'Radarr said:',
+  arrsaid: '{arr} said:',
 });
 
 interface ReleaseCardProps {
   release: Release;
   state: CardState;
+  /** Where a Push goes: Radarr for movies, Sonarr for series. */
+  arr: ArrName;
   /**
-   * False when the movie isn't in Radarr, so Radarr has nothing to match.
+   * False when the item isn't in Radarr/Sonarr, so there's nothing to match.
    * The panel explains why.
    */
   canPush: boolean;
@@ -45,7 +50,13 @@ const Spinner = () => (
   </svg>
 );
 
-const ReleaseCard = ({ release, state, canPush, onPush }: ReleaseCardProps) => {
+const ReleaseCard = ({
+  release,
+  state,
+  arr,
+  canPush,
+  onPush,
+}: ReleaseCardProps) => {
   const intl = useIntl();
 
   const age =
@@ -69,7 +80,7 @@ const ReleaseCard = ({ release, state, canPush, onPush }: ReleaseCardProps) => {
   const statusPill =
     state.status in pill ? pill[state.status as keyof typeof pill] : null;
 
-  const pushLabel = intl.formatMessage(messages.push);
+  const pushLabel = intl.formatMessage(messages.push, { arr });
 
   return (
     <article
@@ -108,7 +119,7 @@ const ReleaseCard = ({ release, state, canPush, onPush }: ReleaseCardProps) => {
         {state.status === 'pushing' ? (
           <span
             role="status"
-            aria-label={intl.formatMessage(messages.pushing)}
+            aria-label={intl.formatMessage(messages.pushing, { arr })}
             className="inline-flex shrink-0 items-center rounded-md bg-indigo-600/60 px-3 py-1.5 text-white"
           >
             <Spinner />
@@ -132,14 +143,14 @@ const ReleaseCard = ({ release, state, canPush, onPush }: ReleaseCardProps) => {
           <span
             className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold text-white ${statusPill[0]}`}
           >
-            {intl.formatMessage(statusPill[1])}
+            {intl.formatMessage(statusPill[1], { arr })}
           </span>
         </div>
       )}
       {state.status === 'rejected' && state.rejections.length > 0 && (
         <div className="mt-3 rounded-md border border-red-700/60 bg-red-950/40 p-3 text-xs">
           <div className="mb-1 font-semibold text-red-300">
-            {intl.formatMessage(messages.radarrsaid)}
+            {intl.formatMessage(messages.arrsaid, { arr })}
           </div>
           <ul className="list-disc space-y-0.5 pl-4 text-red-200">
             {state.rejections.map((reason) => (

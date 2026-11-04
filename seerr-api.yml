@@ -8308,7 +8308,7 @@ paths:
   /manualsearch/options:
     get:
       summary: Get Manual Search options for a media item
-      description: Returns whether Manual Search is enabled (Prowlarr configured) and the prefilled search queries. Requires the `ADMIN` permission.
+      description: Returns whether Manual Search is enabled (Prowlarr configured), the prefilled search queries and, for a series, its Search Scopes. Requires the `ADMIN` permission.
       tags:
         - other
       parameters:
@@ -8317,7 +8317,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [movie]
+            enum: [movie, tv]
         - in: query
           name: tmdbId
           required: true
@@ -8346,16 +8346,29 @@ paths:
                       original:
                         type: string
                         example: Anatomie d'une chute 2023
+                  scopes:
+                    type: array
+                    description: TV only. The whole series (no season), then each regular season with episodes; Season 0 is left out
+                    items:
+                      type: object
+                      required: [query]
+                      properties:
+                        season:
+                          type: number
+                          example: 2
+                        query:
+                          type: string
+                          example: Severance S02
                   inArr:
                     type: boolean
-                    description: Whether the movie is linked to a Radarr movie, so a Release can be Pushed
+                    description: Whether the item is linked to a Radarr movie or Sonarr series, so a Release can be Pushed
                     example: true
         '403':
           description: Requires the ADMIN permission
   /manualsearch:
     get:
       summary: Search Prowlarr for Releases
-      description: Runs a free-text Prowlarr search in the media type's categories and returns torrent Releases only. Requires the `ADMIN` permission.
+      description: Runs a free-text Prowlarr search in the media type's categories (2000 for movies, 5000 for TV) and returns torrent Releases only. Requires the `ADMIN` permission.
       tags:
         - other
       parameters:
@@ -8364,7 +8377,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [movie]
+            enum: [movie, tv]
         - in: query
           name: tmdbId
           required: true
@@ -8450,8 +8463,8 @@ paths:
                     type: string
   /manualsearch/push:
     post:
-      summary: Push a Release to Radarr
-      description: Pushes a Release to the Radarr server holding the movie (the one it was requested on, else the default non-4K one) and returns Radarr's verdict. Requires the `ADMIN` permission.
+      summary: Push a Release to Radarr or Sonarr
+      description: Pushes a Release to the Radarr/Sonarr server holding the movie or series (the one it was requested on, else the default non-4K one) and returns its verdict. Requires the `ADMIN` permission.
       tags:
         - other
       requestBody:
@@ -8464,7 +8477,7 @@ paths:
               properties:
                 mediaType:
                   type: string
-                  enum: [movie]
+                  enum: [movie, tv]
                 tmdbId:
                   type: number
                   example: 915935
@@ -8494,7 +8507,7 @@ paths:
                       type: number
       responses:
         '200':
-          description: Radarr's verdict on the Release
+          description: Radarr's or Sonarr's verdict on the Release
           content:
             application/json:
               schema:
@@ -8512,7 +8525,7 @@ paths:
         '403':
           description: Requires the ADMIN permission
         '409':
-          description: The movie is not in Radarr, or no Radarr server is configured for it
+          description: The item is not in Radarr/Sonarr, or no Radarr/Sonarr server is configured for it
           content:
             application/json:
               schema:
@@ -8524,7 +8537,7 @@ paths:
                   message:
                     type: string
         '502':
-          description: Radarr is unreachable
+          description: Radarr/Sonarr is unreachable
           content:
             application/json:
               schema:
