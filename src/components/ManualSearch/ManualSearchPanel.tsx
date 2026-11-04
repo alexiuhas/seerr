@@ -2,6 +2,8 @@ import Alert from '@app/components/Common/Alert';
 import Button from '@app/components/Common/Button';
 import SlideOver from '@app/components/Common/SlideOver';
 import ReleaseCard from '@app/components/ManualSearch/ReleaseCard';
+import type { QueryPreset } from '@app/components/ManualSearch/queryPresets';
+import { queryPresets } from '@app/components/ManualSearch/queryPresets';
 import type {
   CardState,
   ReleaseSort,
@@ -13,7 +15,12 @@ import {
 import { encodeURIExtraParams } from '@app/hooks/useDiscover';
 import useToasts from '@app/hooks/useToasts';
 import defineMessages from '@app/utils/defineMessages';
-import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { ArrowDownIcon, ArrowUpIcon } from '@heroicons/react/20/solid';
+import {
+  BarsArrowDownIcon,
+  InformationCircleIcon,
+  MagnifyingGlassIcon,
+} from '@heroicons/react/24/outline';
 import type {
   ArrName,
   GrabOutcome,
@@ -37,13 +44,19 @@ const messages = defineMessages('components.ManualSearch', {
   searchquery: 'Search Query',
   searchprowlarr: 'Search Prowlarr',
   search: 'Search',
+  searchfor: 'Search For',
   englishtitle: 'English',
   originaltitle: 'Original',
+  seriespreset: 'Series',
+  seasonpreset: 'S{seasonNumber}',
   sortby: 'Sort By',
   sortseeders: 'Seeders',
   sortsize: 'Size',
   sortage: 'Age',
-  filterreleases: 'Filter releases…',
+  sortseedersorder: 'Most seeders first',
+  sortsizeorder: 'Smallest first',
+  sortageorder: 'Newest first',
+  filterreleases: 'Filter…',
   releasecount: '{count, plural, one {# release} other {# releases}}',
   noresults: 'No releases found. Try another query.',
   nomatches: 'No releases match the filter.',
@@ -54,9 +67,6 @@ const messages = defineMessages('components.ManualSearch', {
     'Prowlarr could not be reached. Check that it is running and that PROWLARR_URL and PROWLARR_API_KEY are correct.',
   disabled: 'Prowlarr is not configured.',
   unknownerror: 'Something went wrong while searching. Please try again.',
-  searchscope: 'Search Scope',
-  wholeseries: 'Whole series',
-  season: 'Season {seasonNumber}',
   notinarr: 'Not in {arr} yet. Request it using the Quiet Server, then push.',
   senttoarr: 'Sent to {arr}.',
   queuedinarr: 'Queued in {arr} (pending).',
@@ -83,6 +93,13 @@ const messages = defineMessages('components.ManualSearch', {
 const IDLE: CardState = { status: 'idle' };
 
 const SORTS: ReleaseSort[] = ['seeders', 'size', 'age'];
+
+// Which way each sort runs, by the value it sorts on (see releases.ts).
+const SORT_ORDER = {
+  seeders: { Icon: ArrowDownIcon, label: messages.sortseedersorder },
+  size: { Icon: ArrowUpIcon, label: messages.sortsizeorder },
+  age: { Icon: ArrowUpIcon, label: messages.sortageorder },
+} as const;
 
 type SearchError = ManualSearchErrorCode | 'UNKNOWN';
 
@@ -119,8 +136,6 @@ const ManualSearchPanel = ({
   // Kept across searches, so a Release already Pushed can't be Pushed twice.
   const [cards, setCards] = useState<Record<string, CardState>>({});
   const [query, setQuery] = useState(queries.english);
-  // 0 is the whole series
-  const [scopeIndex, setScopeIndex] = useState(0);
   const [sort, setSort] = useState<ReleaseSort>('seeders');
   const [filter, setFilter] = useState('');
   const [releases, setReleases] = useState<Release[] | null>(null);
@@ -277,20 +292,21 @@ const ManualSearchPanel = ({
     [releases, sort, filter]
   );
 
-  const titleChips = [
-    {
-      label: intl.formatMessage(messages.englishtitle),
-      query: queries.english,
-    },
-    ...(queries.original
-      ? [
-          {
-            label: intl.formatMessage(messages.originaltitle),
-            query: queries.original,
-          },
-        ]
-      : []),
-  ];
+  const presets = queryPresets(queries, scopes);
+  const presetLabel = (preset: QueryPreset) => {
+    switch (preset.kind) {
+      case 'english':
+        return intl.formatMessage(messages.englishtitle);
+      case 'original':
+        return intl.formatMessage(messages.originaltitle);
+      case 'series':
+        return intl.formatMessage(messages.seriespreset);
+      case 'season':
+        return intl.formatMessage(messages.seasonpreset, {
+          seasonNumber: String(preset.season).padStart(2, '0'),
+        });
+    }
+  };
 
   const errorMessage: Partial<
     Record<SearchError, typeof messages.unknownerror>
@@ -316,9 +332,10 @@ const ManualSearchPanel = ({
     >
       <div className="flex flex-col gap-3">
         {!inArr && (
-          <Alert type="info">
-            {intl.formatMessage(messages.notinarr, { arr })}
-          </Alert>
+          <p className="flex items-start gap-1.5 text-xs text-gray-400">
+            <InformationCircleIcon className="h-4 w-4 shrink-0" />
+            <span>{intl.formatMessage(messages.notinarr, { arr })}</span>
+          </p>
         )}
         {searchExpired && (
           <Alert type="warning">
@@ -367,97 +384,38 @@ const ManualSearchPanel = ({
           </Button>
         </form>
 
-        {isTv && scopes && scopes.length > 0 && (
-          <div className="flex items-center gap-2">
-            <label
-              htmlFor="manual-search-scope"
-              className="text-xs uppercase tracking-wide text-gray-400"
-            >
-              {intl.formatMessage(messages.searchscope)}
-            </label>
-            <select
-              id="manual-search-scope"
-              value={scopeIndex}
-              onChange={(e) => {
-                const index = Number(e.target.value);
-                setScopeIndex(index);
-                setQuery(scopes[index].query);
-                search(scopes[index].query);
-              }}
-              className="w-auto"
-            >
-              {scopes.map((option, index) => (
-                <option key={option.season ?? 'series'} value={index}>
-                  {option.season == null
-                    ? intl.formatMessage(messages.wholeseries)
-                    : intl.formatMessage(messages.season, {
-                        seasonNumber: option.season,
-                      })}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {titleChips.length > 1 && (
-          <div className="flex flex-wrap gap-2">
-            {titleChips.map((chip) => (
-              <button
-                key={chip.label}
-                type="button"
-                onClick={() => {
-                  setQuery(chip.query);
-                  search(chip.query);
-                }}
-                className={`rounded-full border px-3 py-1 text-xs ${
-                  query === chip.query
-                    ? 'border-indigo-500 bg-indigo-600/30 text-white'
-                    : 'border-gray-600 text-gray-300 hover:bg-gray-700'
-                }`}
-              >
-                <span className="text-gray-400">{chip.label}:</span>{' '}
-                {chip.query}
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div className="flex flex-wrap items-stretch gap-2">
+        {presets.length > 0 && (
           <div
             role="group"
-            aria-label={intl.formatMessage(messages.sortby)}
-            className="inline-flex overflow-hidden rounded-md border border-gray-600"
+            aria-label={intl.formatMessage(messages.searchfor)}
+            className="hide-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4"
           >
-            {SORTS.map((key) => (
+            {presets.map((preset) => (
               <button
-                key={key}
+                key={preset.query}
                 type="button"
-                aria-pressed={sort === key}
-                onClick={() => setSort(key)}
-                className={`flex items-center px-2.5 py-1 text-xs ${
-                  sort === key
-                    ? 'bg-gray-600 text-white'
-                    : 'text-gray-300 hover:bg-gray-700'
+                title={preset.query}
+                aria-pressed={query === preset.query}
+                onClick={() => {
+                  setQuery(preset.query);
+                  search(preset.query);
+                }}
+                className={`shrink-0 rounded-full border px-3 py-1 text-xs ${
+                  query === preset.query
+                    ? 'border-indigo-500 bg-indigo-600/30 text-white'
+                    : 'border-gray-500 text-gray-300 hover:bg-gray-700'
                 }`}
               >
-                {intl.formatMessage(sortLabel[key])}
+                {presetLabel(preset)}
               </button>
             ))}
           </div>
-          <label htmlFor="manual-search-filter" className="sr-only">
-            {intl.formatMessage(messages.filterreleases)}
-          </label>
-          <input
-            id="manual-search-filter"
-            type="text"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder={intl.formatMessage(messages.filterreleases)}
-            className="min-w-0 flex-1"
-          />
-        </div>
+        )}
 
-        <div className="flex flex-col gap-3" aria-live="polite">
+        <div
+          className="mt-1 flex flex-col gap-3 border-t border-gray-700 pt-4"
+          aria-live="polite"
+        >
           {loading ? (
             Array.from({ length: 4 }, (_, i) => (
               <div
@@ -471,11 +429,63 @@ const ManualSearchPanel = ({
             </Alert>
           ) : releases ? (
             <>
-              <div className="text-xs tabular-nums text-gray-400">
-                {intl.formatMessage(messages.releasecount, {
-                  count: visibleReleases.length,
-                })}
-              </div>
+              {releases.length > 0 && (
+                <div className="sticky top-0 z-10 -mx-4 -mt-4 flex flex-col gap-2 bg-gray-800/95 px-4 py-3 backdrop-blur">
+                  <div className="flex flex-wrap items-stretch gap-2">
+                    <div
+                      role="group"
+                      aria-label={intl.formatMessage(messages.sortby)}
+                      className="inline-flex overflow-hidden rounded-md border border-gray-500"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="flex items-center border-r border-gray-500 px-2 text-gray-400"
+                      >
+                        <BarsArrowDownIcon className="h-4 w-4" />
+                      </span>
+                      {SORTS.map((key) => {
+                        const active = sort === key;
+                        const { Icon, label } = SORT_ORDER[key];
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            aria-pressed={active}
+                            title={intl.formatMessage(label)}
+                            onClick={() => setSort(key)}
+                            className={`flex items-center gap-0.5 px-2.5 py-1 text-xs ${
+                              active
+                                ? 'bg-gray-600 text-white'
+                                : 'text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            {intl.formatMessage(sortLabel[key])}
+                            {active && (
+                              <Icon aria-hidden="true" className="h-3 w-3" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <label htmlFor="manual-search-filter" className="sr-only">
+                      {intl.formatMessage(messages.filterreleases)}
+                    </label>
+                    <input
+                      id="manual-search-filter"
+                      type="text"
+                      value={filter}
+                      onChange={(e) => setFilter(e.target.value)}
+                      placeholder={intl.formatMessage(messages.filterreleases)}
+                      className="min-w-0 flex-1"
+                    />
+                  </div>
+                  <div className="text-xs tabular-nums text-gray-400">
+                    {intl.formatMessage(messages.releasecount, {
+                      count: visibleReleases.length,
+                    })}
+                  </div>
+                </div>
+              )}
               {releases.length === 0 ? (
                 <p className="text-sm text-gray-400">
                   {intl.formatMessage(messages.noresults)}

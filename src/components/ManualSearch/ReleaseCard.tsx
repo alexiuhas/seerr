@@ -131,7 +131,9 @@ const ReleaseCard = ({
             <span className="text-red-400">{release.leechers}</span>
           </span>
           <span title={intl.formatMessage(messages.age)}>{age}</span>
-          {release.categories[0] && <span>{release.categories[0]}</span>}
+          {release.categories[0] && (
+            <span className="hidden sm:inline">{release.categories[0]}</span>
+          )}
         </div>
         {state.status === 'pushing' ? (
           <span
