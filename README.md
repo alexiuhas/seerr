@@ -15,7 +15,7 @@
 
 ## Manual Search Fork
 
-This fork adds **Manual Search**: an admin searches Prowlarr's indexers from a movie or series page and picks the exact Release to download. A daily workflow rebases the fork onto each new stable upstream tag and publishes it to `ghcr.io/alexiuhas/seerr`, as `:latest` and `:<upstream-tag>-ms.<sha>` (`linux/amd64` only). See [ADR-0001](docs/adr/0001-auto-rebased-fork-with-env-config.md).
+This fork adds **Manual Search**:  an admin searches Prowlarr's indexers from a movie or series page and picks the exact Release to download. A daily workflow rebases the fork onto each new stable upstream tag and publishes it to `ghcr.io/alexiuhas/seerr`, as `:latest` and `:<upstream-tag>-ms.<sha>` (`linux/amd64` only). See [ADR-0001](docs/adr/0001-auto-rebased-fork-with-env-config.md).
 
 ### Swapping the Image
 
